@@ -51,7 +51,12 @@ internal object ProviderRuntimeErrorDetector {
                 "authentication failed" in combined ||
                 "invalid api key" in combined ||
                 "http 401" in combined ||
-                (json?.optString("subtype") == "api_retry" && json.optInt("error_status") in listOf(401, 403)) ->
+                "http 403" in combined ||
+                "http 429" in combined ||
+                "expired" in combined ||
+                "quota" in combined ||
+                "rate limit" in combined ||
+                (json?.optString("subtype") == "api_retry" && json.optInt("error_status") in listOf(401, 403, 429)) ->
                 "The provider rejected the saved API key."
             else -> null
         }

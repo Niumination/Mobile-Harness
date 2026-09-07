@@ -12,6 +12,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.jarves.mh.BuildConfig
 import com.jarves.mh.data.ApiKeyVault
+import com.jarves.mh.data.ApiKeyInfo
 import com.jarves.mh.data.AppPreferences
 import com.jarves.mh.model.ActivityItem
 import com.jarves.mh.model.AgentKind
@@ -91,6 +92,14 @@ private data class ProjectTerminalResult(
     val cwd: String,
 )
 
+private data class RuntimeRetryRequest(
+    val runtime: com.jarves.mh.runtime.RuntimeBridge,
+    val project: Project,
+    val prompt: String,
+    val history: List<ChatMessage>,
+    val provider: ProviderProfile,
+)
+
 data class AppUiState(
     val startupStage: StartupStage = StartupStage.CHECKING,
     val startupProgress: Float = 0f,
@@ -103,6 +112,7 @@ data class AppUiState(
     val onboardingComplete: Boolean = false,
     val backgroundSetupComplete: Boolean = false,
     val provider: ProviderProfile = ProviderProfile(ProviderKind.ANTHROPIC),
+    val activeApiKeyName: String? = null,
     val themeMode: com.jarves.mh.ui.theme.AppThemeMode = com.jarves.mh.ui.theme.AppThemeMode.DARK,
     val apiPingStatus: ApiPingStatus = ApiPingStatus.IDLE,
     val apiPingMessage: String? = null,
@@ -180,6 +190,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var projectTerminalProjectId: String? = null
     @Volatile private var projectTerminalStopRequested: Boolean = false
     @Volatile private var setupCompletionHandled: Boolean = false
+    private var activeRuntimeRequest: RuntimeRetryRequest? = null
+    private val failedApiKeyIds = mutableSetOf<String>()
     private val initialAgentKind = runCatching { AgentKind.valueOf(preferences.agentKind) }
         .getOrDefault(AgentKind.CLAUDE_CODE)
     private val _state = MutableStateFlow(
@@ -188,6 +200,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             backgroundSetupComplete = preferences.backgroundSetupComplete,
             agentKind = initialAgentKind,
             provider = preferences.loadProvider(vault, initialAgentKind),
+            activeApiKeyName = vault.list(preferences.loadProvider(vault, initialAgentKind).kind.name)
+                .firstOrNull(ApiKeyInfo::isActive)?.name,
             themeMode = runCatching { com.jarves.mh.ui.theme.AppThemeMode.valueOf(preferences.themeMode.uppercase()) }
                 .getOrDefault(com.jarves.mh.ui.theme.AppThemeMode.DARK),
             projects = preferences.loadProjects(),
@@ -786,6 +800,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun getSavedApiKey(kind: ProviderKind): String = vault.get(kind.name).orEmpty()
 
+    fun getSavedApiKeys(kind: ProviderKind): List<ApiKeyInfo> = vault.list(kind.name)
+
+    fun addApiKey(kind: ProviderKind, name: String, secret: String): List<ApiKeyInfo> {
+        vault.add(kind.name, name, secret)
+        val keys = vault.list(kind.name)
+        refreshActiveApiKey(kind)
+        return keys
+    }
+
+    fun activateApiKey(kind: ProviderKind, keyId: String): List<ApiKeyInfo> {
+        vault.activate(kind.name, keyId)
+        refreshActiveApiKey(kind)
+        return vault.list(kind.name)
+    }
+
+    fun removeApiKey(kind: ProviderKind, keyId: String): List<ApiKeyInfo> {
+        vault.remove(kind.name, keyId)
+        refreshActiveApiKey(kind)
+        return vault.list(kind.name)
+    }
+
+    private fun refreshActiveApiKey(kind: ProviderKind) {
+        if (_state.value.provider.kind != kind) return
+        val keys = vault.list(kind.name)
+        _state.update { current ->
+            current.copy(
+                activeApiKeyName = keys.firstOrNull(ApiKeyInfo::isActive)?.name,
+                provider = current.provider.copy(hasSecret = keys.isNotEmpty()),
+            )
+        }
+    }
+
     /** Keeps both agent bridges mapped to the same workspace root; the active one is used. */
     private fun configureBridgeRoots(projectId: String, rootPath: String) {
         claudeRuntime.configureProjectRoot(projectId, rootPath)
@@ -1067,6 +1113,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         preferences.saveProvider(saved, _state.value.agentKind)
         preferences.onboardingComplete = true
         _state.update { it.copy(onboardingComplete = true, provider = saved, startupStage = StartupStage.READY) }
+        refreshActiveApiKey(profile.kind)
         pingApi()
     }
 
@@ -1083,7 +1130,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         preferences.agentKind = kind.name
         _state.update { current ->
             preferences.saveProvider(current.provider, current.agentKind)
-            current.copy(agentKind = kind, provider = preferences.loadProvider(vault, kind))
+            val provider = preferences.loadProvider(vault, kind)
+            current.copy(
+                agentKind = kind,
+                provider = provider,
+                activeApiKeyName = vault.list(provider.kind.name).firstOrNull(ApiKeyInfo::isActive)?.name,
+            )
         }
     }
 
@@ -1097,6 +1149,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             current.copy(
                 agentKind = kind,
                 provider = provider,
+                activeApiKeyName = vault.list(provider.kind.name).firstOrNull(ApiKeyInfo::isActive)?.name,
                 agentInstalling = kind,
                 agentMessage = "Preparing ${kind.title}…",
                 agentProgress = 0f,
@@ -1812,8 +1865,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             appendLine("These files were explicitly attached by the user. Inspect them only as needed for the request.")
             appendLine("</attached_files>")
         }
+        failedApiKeyIds.clear()
+        activeRuntimeRequest = RuntimeRetryRequest(
+            runtime = activeRuntime(),
+            project = project,
+            prompt = runtimePrompt,
+            history = history,
+            provider = state.value.provider,
+        )
         viewModelScope.launch {
-            activeRuntime().startSession(project.id, project.slug, project.kind, runtimePrompt, history, state.value.provider)
+            activeRuntimeRequest?.let { request ->
+                request.runtime.startSession(
+                    request.project.id,
+                    request.project.slug,
+                    request.project.kind,
+                    request.prompt,
+                    request.history,
+                    request.provider,
+                )
+            }
         }
     }
 
@@ -1960,6 +2030,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun onRuntimeEvent(event: RuntimeEvent) {
+        if (event is RuntimeEvent.SessionFailed && retryWithNextApiKey(event)) return
         _state.update { current ->
             if (!current.isRunning) {
                 current
@@ -2138,6 +2209,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
             }
         }
+        if (event is RuntimeEvent.SessionCompleted || event is RuntimeEvent.SessionFailed) {
+            activeRuntimeRequest = null
+            failedApiKeyIds.clear()
+        }
         if (event is RuntimeEvent.FilesChanged || event is RuntimeEvent.SessionCompleted) {
             _state.value.activeProject?.id?.let { touchProject(it) }
             refreshProjectFiles()
@@ -2145,6 +2220,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (event is RuntimeEvent.AssistantDelta || event is RuntimeEvent.SessionCompleted || event is RuntimeEvent.SessionFailed) {
             persistMessages()
         }
+    }
+
+    private fun retryWithNextApiKey(event: RuntimeEvent.SessionFailed): Boolean {
+        val current = _state.value
+        if (!current.isRunning || current.activeSessionId != event.sessionId) return false
+        if (!isApiKeyFailure(event.reason)) return false
+        val request = activeRuntimeRequest ?: return false
+        val credentials = vault.credentials(request.provider.kind.name)
+        val active = credentials.firstOrNull { it.isActive } ?: return false
+        failedApiKeyIds += active.id
+        val next = credentials.firstOrNull { it.id !in failedApiKeyIds } ?: return false
+        if (!vault.activate(request.provider.kind.name, next.id)) return false
+        _state.update {
+            it.copy(
+                activeSessionId = null,
+                activeApiKeyName = next.name,
+                toastMessage = "${active.name} failed. Switched to ${next.name}.",
+                liveProcess = it.liveProcess + ActivityItem("API key switched", "Using ${next.name}", true),
+            )
+        }
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(300)
+            request.runtime.startSession(
+                request.project.id,
+                request.project.slug,
+                request.project.kind,
+                request.prompt,
+                request.history,
+                request.provider,
+            )
+        }
+        return true
+    }
+
+    private fun isApiKeyFailure(reason: String): Boolean {
+        val value = reason.lowercase()
+        return "api key" in value || "authentication" in value || "user not found" in value ||
+            "http 401" in value || "http 403" in value || "http 429" in value ||
+            "expired" in value || "quota" in value || "rate limit" in value
     }
 
     private fun touchProject(projectId: String) {

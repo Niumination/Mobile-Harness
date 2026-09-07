@@ -85,6 +85,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarves.mh.BuildConfig
+import com.jarves.mh.data.ApiKeyInfo
 import com.jarves.mh.model.AgentKind
 import com.jarves.mh.model.DEEPSEEK_HARNESS_PROVIDERS
 import com.jarves.mh.model.DevStack
@@ -111,6 +112,10 @@ fun SettingsScreen(
     onPing: () -> Unit,
     onClearTerminal: () -> Unit,
     getSavedApiKey: (ProviderKind) -> String,
+    getSavedApiKeys: (ProviderKind) -> List<ApiKeyInfo>,
+    onAddApiKey: (ProviderKind, String, String) -> List<ApiKeyInfo>,
+    onActivateApiKey: (ProviderKind, String) -> List<ApiKeyInfo>,
+    onRemoveApiKey: (ProviderKind, String) -> List<ApiKeyInfo>,
     onInstallDevStack: (DevStack) -> Unit = {},
     onInstallAgent: (AgentKind) -> Unit = {},
     initialDebugUpdateManifestUrl: String = "",
@@ -125,7 +130,12 @@ fun SettingsScreen(
     var model by rememberSaveable(state.provider.model) { mutableStateOf(state.provider.model) }
     var dshApi by rememberSaveable(state.provider.dshApi) { mutableStateOf(state.provider.dshApi) }
     var apiKey by rememberSaveable(state.provider.kind) { mutableStateOf(getSavedApiKey(state.provider.kind)) }
-    var keyVisible by rememberSaveable { mutableStateOf(false) }
+    var savedKeys by remember(state.provider.kind, state.activeApiKeyName) {
+        mutableStateOf(getSavedApiKeys(state.provider.kind))
+    }
+    var newKeyName by rememberSaveable { mutableStateOf("") }
+    var newApiKey by rememberSaveable { mutableStateOf("") }
+    var newKeyVisible by rememberSaveable { mutableStateOf(false) }
     var models by remember(baseUrl) { mutableStateOf(emptyList<DiscoveredModel>()) }
     var modelSearch by rememberSaveable { mutableStateOf("") }
     var showModels by rememberSaveable { mutableStateOf(false) }
@@ -355,12 +365,15 @@ fun SettingsScreen(
                         model = model,
                         dshApi = dshApi,
                         apiKey = apiKey,
-                        keyVisible = keyVisible,
                         models = models,
                         isDiscovering = isDiscovering,
                         isValidating = isValidating,
                         status = status,
                         statusOk = statusOk,
+                        savedKeys = savedKeys,
+                        newKeyName = newKeyName,
+                        newApiKey = newApiKey,
+                        newKeyVisible = newKeyVisible,
                         onPing = onPing,
                         onProvider = { kind ->
                             selectedKind = kind
@@ -368,14 +381,36 @@ fun SettingsScreen(
                             model = kind.defaultModel
                             dshApi = "anthropic-messages"
                             apiKey = getSavedApiKey(kind)
+                            savedKeys = getSavedApiKeys(kind)
                             models = emptyList()
                             status = null
                         },
                         onBaseUrl = { baseUrl = it; models = emptyList(); status = null },
                         onModel = { model = it; status = null },
                         onDshApi = { dshApi = it; status = null },
-                        onApiKey = { apiKey = it; status = null },
-                        onToggleKey = { keyVisible = !keyVisible },
+                        onNewKeyName = { newKeyName = it },
+                        onNewApiKey = { newApiKey = it },
+                        onToggleNewKey = { newKeyVisible = !newKeyVisible },
+                        onAddKey = {
+                            savedKeys = onAddApiKey(selectedKind, newKeyName, newApiKey.trim())
+                            newKeyName = ""
+                            newApiKey = ""
+                            apiKey = getSavedApiKey(selectedKind)
+                            status = "API key added"
+                            statusOk = true
+                        },
+                        onActivateKey = { keyId ->
+                            savedKeys = onActivateApiKey(selectedKind, keyId)
+                            apiKey = getSavedApiKey(selectedKind)
+                            status = "Active API key changed"
+                            statusOk = true
+                        },
+                        onRemoveKey = { keyId ->
+                            savedKeys = onRemoveApiKey(selectedKind, keyId)
+                            apiKey = getSavedApiKey(selectedKind)
+                            status = "API key removed"
+                            statusOk = true
+                        },
                         onModels = { if (models.isEmpty()) discoverModels() else showModels = true },
                         onValidate = {
                             scope.launch {
@@ -616,23 +651,32 @@ private fun ConnectionSettings(
     model: String,
     dshApi: String,
     apiKey: String,
-    keyVisible: Boolean,
     models: List<DiscoveredModel>,
     isDiscovering: Boolean,
     isValidating: Boolean,
     status: String?,
     statusOk: Boolean,
+    savedKeys: List<ApiKeyInfo>,
+    newKeyName: String,
+    newApiKey: String,
+    newKeyVisible: Boolean,
     onPing: () -> Unit,
     onProvider: (ProviderKind) -> Unit,
     onBaseUrl: (String) -> Unit,
     onModel: (String) -> Unit,
     onDshApi: (String) -> Unit,
-    onApiKey: (String) -> Unit,
-    onToggleKey: () -> Unit,
+    onNewKeyName: (String) -> Unit,
+    onNewApiKey: (String) -> Unit,
+    onToggleNewKey: () -> Unit,
+    onAddKey: () -> Unit,
+    onActivateKey: (String) -> Unit,
+    onRemoveKey: (String) -> Unit,
     onModels: () -> Unit,
     onValidate: () -> Unit,
 ) {
     val visibleKinds = remember(state.agentKind) { providersForAgent(state.agentKind) }
+    var providerExpanded by rememberSaveable { mutableStateOf(false) }
+    var addKeyExpanded by rememberSaveable(savedKeys.isEmpty()) { mutableStateOf(savedKeys.isEmpty()) }
     Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f), shape = RoundedCornerShape(14.dp)) {
         Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(8.dp).background(
@@ -647,6 +691,9 @@ private fun ConnectionSettings(
             Column(Modifier.weight(1f)) {
                 Text("Active connection", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(state.provider.model.ifBlank { "Not configured" }, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                state.activeApiKeyName?.let { name ->
+                    Text("Key: $name", fontSize = 11.sp, color = PocketOrange, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
                 state.apiPingMessage?.let {
                     Text(it, fontSize = 11.sp, color = if (state.apiPingStatus == ApiPingStatus.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
@@ -658,11 +705,29 @@ private fun ConnectionSettings(
     }
 
     Text("Provider", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)) {
-        Column {
-            visibleKinds.forEachIndexed { index, kind ->
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable { providerExpanded = !providerExpanded },
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        border = BorderStroke(1.dp, if (providerExpanded) PocketOrange else MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(selectedKind.title, fontWeight = FontWeight.SemiBold)
+                Text(selectedKind.subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            }
+            Icon(if (providerExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown, "Choose provider")
+        }
+    }
+    AnimatedVisibility(providerExpanded) {
+        Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)) {
+            Column {
+                visibleKinds.forEachIndexed { index, kind ->
                 Row(
-                    Modifier.fillMaxWidth().clickable { onProvider(kind) }.padding(horizontal = 13.dp, vertical = 11.dp),
+                    Modifier.fillMaxWidth().clickable {
+                        onProvider(kind)
+                        providerExpanded = false
+                    }.padding(horizontal = 13.dp, vertical = 11.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
@@ -673,21 +738,21 @@ private fun ConnectionSettings(
                 }
                 if (index != visibleKinds.lastIndex) HorizontalDivider(Modifier.padding(start = 13.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
             }
+            }
         }
     }
 
-    OutlinedTextField(
-        baseUrl,
-        onBaseUrl,
-        label = { Text("Base URL") },
-        supportingText = {
-            if (selectedKind.fixedBaseUrl) Text("Fixed by ${selectedKind.title}", fontSize = 11.sp)
-        },
-        readOnly = selectedKind.fixedBaseUrl,
-        enabled = !selectedKind.fixedBaseUrl,
-        singleLine = true,
-        modifier = Modifier.fillMaxWidth(),
-    )
+    if (selectedKind.fixedBaseUrl) {
+        Text(
+            selectedKind.defaultBaseUrl,
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    } else {
+        OutlinedTextField(baseUrl, onBaseUrl, label = { Text("Base URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    }
     if (state.agentKind == AgentKind.DEEPSEEK_HARNESS && selectedKind == ProviderKind.CUSTOM) {
         Text("Gateway protocol", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)) {
@@ -704,25 +769,86 @@ private fun ConnectionSettings(
             }
         }
     }
-    OutlinedTextField(model, onModel, label = { Text("Model name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    Text("Model", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    OutlinedTextField(model, onModel, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
     OutlinedButton(onClick = onModels, enabled = baseUrl.isNotBlank() && apiKey.isNotBlank() && !isDiscovering, modifier = Modifier.fillMaxWidth().height(50.dp)) {
         if (isDiscovering) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
         else Icon(if (models.isEmpty()) Icons.Default.Search else Icons.Default.KeyboardArrowDown, null, Modifier.size(18.dp))
         Spacer(Modifier.width(7.dp))
         Text(if (models.isEmpty()) "Find available models" else "Available models (${models.size})")
     }
-    OutlinedTextField(
-        apiKey,
-        onApiKey,
-        label = { Text("API key") },
-        singleLine = true,
-        visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-        trailingIcon = {
-            IconButton(onClick = onToggleKey) { Icon(if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, "Show or hide key") }
-        },
-        modifier = Modifier.fillMaxWidth(),
-    )
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("API keys", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${savedKeys.size} saved · automatic failover enabled", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        OutlinedButton(onClick = { addKeyExpanded = !addKeyExpanded }) {
+            Text(if (addKeyExpanded) "Cancel" else "Add key")
+        }
+    }
+    if (savedKeys.isNotEmpty()) {
+        Text("Saved API keys", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)) {
+            Column {
+                savedKeys.forEachIndexed { index, key ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onActivateKey(key.id) }.padding(start = 13.dp, top = 9.dp, bottom = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(key.name, fontWeight = FontWeight.Medium)
+                            Text(
+                                if (key.isActive) "Active now · tap another key to switch" else "Tap to make active",
+                                fontSize = 11.sp,
+                                color = if (key.isActive) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        SelectionDot(key.isActive)
+                        IconButton(onClick = { onRemoveKey(key.id) }) {
+                            Icon(Icons.Default.DeleteSweep, "Remove ${key.name}", Modifier.size(18.dp))
+                        }
+                    }
+                    if (index != savedKeys.lastIndex) HorizontalDivider(Modifier.padding(start = 13.dp))
+                }
+            }
+        }
+    }
+    AnimatedVisibility(addKeyExpanded) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedTextField(
+                newKeyName,
+                onNewKeyName,
+                label = { Text("Key name") },
+                placeholder = { Text("Work, Personal, Backup…") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                newApiKey,
+                onNewApiKey,
+                label = { Text("API key") },
+                singleLine = true,
+                visualTransformation = if (newKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    IconButton(onClick = onToggleNewKey) {
+                        Icon(if (newKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, "Show or hide new key")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = {
+                    onAddKey()
+                    addKeyExpanded = false
+                },
+                enabled = newKeyName.isNotBlank() && newApiKey.isNotBlank(),
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+            ) {
+                Text("Save API key")
+            }
+        }
+    }
     if (status != null) {
         Text(status, fontSize = 12.sp, color = if (statusOk) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
     }
