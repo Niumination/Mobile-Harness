@@ -25,6 +25,11 @@ partitions, Magisk files, device identifiers, or user data are included.
   intentionally excludes provider settings, credentials, sessions, and projects.
   Online builds download this artifact from the runtime GitHub release; offline
   builds embed the identical checksum-verified artifact in the APK.
+- `agy`: Google's checksum-pinned official Linux ARM64 Antigravity CLI binary.
+  Build it with `scripts/runtime-bundles/build-agy-from-official.sh`. The overlay
+  excludes OAuth credentials, settings, conversations, projects, and all device
+  data. Review Google's redistribution terms before publishing an APK containing
+  this binary.
 
 The current artifact metadata and SHA-256 checksums live in
 `dist/runtime-bundles/manifest.json`. Large `.tar.zst` files and downloaded

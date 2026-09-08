@@ -41,6 +41,11 @@ data class RuntimeInstallProgress(
     val event: RuntimeInstallEvent = RuntimeInstallEvent.STAGE,
 )
 
+data class AgentUpdateInfo(
+    val installedVersion: String,
+    val latestVersion: String,
+)
+
 enum class RuntimeInstallEvent { STAGE, COMMAND, OUTPUT, DOWNLOAD, COMMAND_COMPLETED, COMPLETED }
 
 private data class RuntimeBundle(
@@ -62,6 +67,8 @@ class RuntimeInstaller(private val context: Context) {
     private val systemUpgradeMarker = File(rootfs, ".pocket-system-upgrade-version")
     private val devStacksFile = File(rootfs, ".pocket-dev-stacks.json")
     private val dshMarker = File(rootfs, ".pocket-dsh-version")
+    private val agyMarker = File(rootfs, ".pocket-agy-version")
+    private val githubCliMarker = File(rootfs, ".pocket-github-cli-version")
     private val dshAndroidCompatibilityMarker = File(rootfs, ".pocket-dsh-android-compat-version")
     private val macosMetadataRepairMarker = File(rootfs, ".pocket-macos-metadata-repair")
 
@@ -100,7 +107,7 @@ class RuntimeInstaller(private val context: Context) {
 
     /** Returns the already verified runtime without performing network or update checks. */
     fun installedRuntime(): InstalledRuntime {
-        check(isInstalled()) { "Claude Code setup is incomplete. Reopen Mobile Harness to repair it." }
+        check(isInstalled()) { "Core runtime setup is incomplete. Reopen Mobile Harness to repair it." }
         return InstalledRuntime(
             proot = File(context.applicationInfo.nativeLibraryDir, "libproot.so"),
             rootfs = rootfs,
@@ -177,7 +184,7 @@ class RuntimeInstaller(private val context: Context) {
 
         // DeepSeek Harness users never launch Claude Code: the binary baked into the
         // Core bundle stays as a standby copy and no update is downloaded for it.
-        val wantsClaudeUpdate = agent != com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS
+        val wantsClaudeUpdate = agent == com.jarves.mh.model.AgentKind.CLAUDE_CODE
         if (wantsClaudeUpdate && hasInternetConnection()) {
             onProgress(RuntimeInstallProgress("Checking the latest Claude Code release", 0.32f))
             runCatching {
@@ -250,6 +257,8 @@ class RuntimeInstaller(private val context: Context) {
         // open on some Android kernels, so the real user session is the launch check.
         if (agent == com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS) {
             ensureDshInstalled(proot, 0.985f, onProgress)
+        } else if (agent == com.jarves.mh.model.AgentKind.ANTIGRAVITY) {
+            ensureAgyInstalled(proot, 0.985f, onProgress)
         }
         onProgress(RuntimeInstallProgress("Setup complete", 1f))
         return InstalledRuntime(proot, rootfs, claude, version)
@@ -258,28 +267,280 @@ class RuntimeInstaller(private val context: Context) {
     /**
      * Installs one coding agent on demand. Safe to call again: an already-installed
      * agent returns immediately without network access. Claude Code always ships
-     * inside the Core bundle, so this only ever fetches DeepSeek Harness.
+     * inside the Core bundle; other agents are fetched only when selected.
      */
     suspend fun ensureAgentInstalled(
         agent: com.jarves.mh.model.AgentKind,
         onProgress: suspend (RuntimeInstallProgress) -> Unit,
     ) {
-        if (agent != com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS) return
         val runtime = installedRuntime()
-        ensureDshInstalled(runtime.proot, 0.05f, onProgress)
-        onProgress(RuntimeInstallProgress("DeepSeek Harness is ready", 1f))
+        when (agent) {
+            com.jarves.mh.model.AgentKind.CLAUDE_CODE -> Unit
+            com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS -> ensureDshInstalled(runtime.proot, 0.05f, onProgress)
+            com.jarves.mh.model.AgentKind.ANTIGRAVITY -> ensureAgyInstalled(runtime.proot, 0.05f, onProgress)
+        }
+        onProgress(RuntimeInstallProgress("${agent.title} is ready", 1f))
     }
 
     fun isAgentInstalled(agent: com.jarves.mh.model.AgentKind): Boolean {
-        if (agent != com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS) return isInstalled()
-        return isInstalled() &&
-            // /usr/local/bin/dsh is an absolute guest symlink. File.exists() follows it
-            // against Android's host root and therefore reports false outside PRoot.
-            File(rootfs, "usr/local/lib/dsh/node_modules/.bin/dsh").isFile &&
-            dshMarker.readTextOrNull() == DSH_VERSION
+        return when (agent) {
+            com.jarves.mh.model.AgentKind.CLAUDE_CODE -> isInstalled()
+            com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS -> isInstalled() &&
+                // /usr/local/bin/dsh is an absolute guest symlink. File.exists() follows it
+                // against Android's host root and therefore reports false outside PRoot.
+                File(rootfs, "usr/local/lib/dsh/node_modules/.bin/dsh").isFile &&
+                !dshMarker.readTextOrNull().isNullOrBlank()
+            com.jarves.mh.model.AgentKind.ANTIGRAVITY -> isInstalled() &&
+                File(rootfs, AGY_GUEST_PATH.removePrefix("/")).canExecute() &&
+                !agyMarker.readTextOrNull().isNullOrBlank()
+        }
     }
 
     val dshVersion: String get() = dshMarker.readTextOrNull().orEmpty()
+
+    val agyVersion: String get() = agyMarker.readTextOrNull().orEmpty()
+
+    val githubCliVersion: String get() = githubCliMarker.readTextOrNull().orEmpty()
+
+    fun isGitHubCliInstalled(): Boolean = isInstalled() &&
+        File(rootfs, GITHUB_CLI_GUEST_PATH.removePrefix("/")).canExecute() &&
+        githubCliMarker.readTextOrNull() == GITHUB_CLI_VERSION
+
+    /** Installs GitHub's official ARM64 CLI on demand; it is not bundled in the APK. */
+    suspend fun ensureGitHubCliInstalled(onProgress: suspend (RuntimeInstallProgress) -> Unit) {
+        if (isGitHubCliInstalled()) return
+        check(!BuildConfig.OFFLINE_RUNTIME_BUNDLES) {
+            "GitHub sign-in needs the PocketDev online APK."
+        }
+        writeResolver()
+        downloads.mkdirs()
+        val downloaded = File(downloads, "gh-$GITHUB_CLI_VERSION-linux-arm64.tar.gz")
+        onProgress(RuntimeInstallProgress("Downloading official GitHub CLI", 0.05f))
+        downloadVerified(GITHUB_CLI_RELEASE_URL, downloaded, GITHUB_CLI_RELEASE_SHA256) { bytes, total ->
+            val ratio = if (total > 0L) bytes.toFloat() / total else 0f
+            onProgress(
+                RuntimeInstallProgress(
+                    message = "Downloading GitHub CLI $GITHUB_CLI_VERSION",
+                    fraction = 0.05f + ratio * 0.75f,
+                    downloadedBytes = bytes,
+                    totalBytes = total.takeIf { it > 0L },
+                    event = RuntimeInstallEvent.DOWNLOAD,
+                ),
+            )
+        }
+        onProgress(RuntimeInstallProgress("Installing GitHub CLI $GITHUB_CLI_VERSION", 0.85f, indeterminate = true))
+        val destination = File(rootfs, GITHUB_CLI_GUEST_PATH.removePrefix("/"))
+        destination.parentFile?.mkdirs()
+        var found = false
+        TarArchiveInputStream(GzipCompressorInputStream(BufferedInputStream(downloaded.inputStream()))).use { archive ->
+            var entry = archive.nextEntry
+            while (entry != null) {
+                if (entry.isFile && entry.name.removePrefix("./").endsWith("/bin/gh")) {
+                    val staged = File(destination.parentFile, ".gh-$GITHUB_CLI_VERSION.installing")
+                    FileOutputStream(staged).use { archive.copyTo(it) }
+                    Os.chmod(staged.absolutePath, 0b111101101)
+                    Os.rename(staged.absolutePath, destination.absolutePath)
+                    found = true
+                    break
+                }
+                entry = archive.nextEntry
+            }
+        }
+        check(found) { "Official GitHub CLI archive did not contain the expected binary" }
+        downloaded.delete()
+        verifyGuest(proot = installedRuntime().proot, command = "$GITHUB_CLI_GUEST_PATH --version", failureMessage = "GitHub CLI verification failed")
+        githubCliMarker.writeText(GITHUB_CLI_VERSION)
+        check(isGitHubCliInstalled()) { "GitHub CLI installation is incomplete" }
+        onProgress(RuntimeInstallProgress("GitHub CLI is ready", 1f))
+    }
+
+    /**
+     * Versions recorded after each real agent binary has been installed and verified.
+     * This intentionally reports what is present in PRoot, even when a newer app build
+     * would subsequently offer an agent update.
+     */
+    fun installedAgentVersions(): Map<com.jarves.mh.model.AgentKind, String> = buildMap {
+        marker.readTextOrNull()
+            ?.trim()
+            ?.takeIf { isInstalled() && it.matches(CLAUDE_VERSION_PATTERN) }
+            ?.let { put(com.jarves.mh.model.AgentKind.CLAUDE_CODE, it) }
+
+        dshMarker.readTextOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && File(rootfs, "usr/local/lib/dsh/node_modules/.bin/dsh").isFile }
+            ?.let { put(com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS, it) }
+
+        agyMarker.readTextOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && File(rootfs, AGY_GUEST_PATH.removePrefix("/")).canExecute() }
+            ?.let { put(com.jarves.mh.model.AgentKind.ANTIGRAVITY, it) }
+    }
+
+    /** Checks each installed agent against its own authoritative release source. */
+    suspend fun checkAgentUpdates(): Map<com.jarves.mh.model.AgentKind, AgentUpdateInfo> {
+        val installed = installedAgentVersions()
+        return buildMap {
+            installed[com.jarves.mh.model.AgentKind.CLAUDE_CODE]?.let { current ->
+                runCatching {
+                    JSONObject(fetchText("https://registry.npmjs.org/@anthropic-ai/claude-code/latest")).getString("version")
+                }.getOrNull()?.takeIf { isVersionNewer(it, current) }?.let { latest ->
+                    put(com.jarves.mh.model.AgentKind.CLAUDE_CODE, AgentUpdateInfo(current, latest))
+                }
+            }
+            installed[com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS]?.let { current ->
+                runCatching {
+                    JSONObject(fetchText("https://registry.npmjs.org/@deepseek-ai/dsh/latest")).getString("version")
+                }.getOrNull()?.takeIf { isVersionNewer(it, current) }?.let { latest ->
+                    put(com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS, AgentUpdateInfo(current, latest))
+                }
+            }
+            installed[com.jarves.mh.model.AgentKind.ANTIGRAVITY]?.let { current ->
+                runCatching { fetchAgyManifest().getString("version") }.getOrNull()
+                    ?.takeIf { isVersionNewer(it, current) }?.let { latest ->
+                        put(com.jarves.mh.model.AgentKind.ANTIGRAVITY, AgentUpdateInfo(current, latest))
+                    }
+            }
+        }
+    }
+
+    suspend fun updateAgent(
+        agent: com.jarves.mh.model.AgentKind,
+        expectedVersion: String,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        val runtime = installedRuntime()
+        when (agent) {
+            com.jarves.mh.model.AgentKind.CLAUDE_CODE -> updateClaude(runtime, expectedVersion, onProgress)
+            com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS -> updateDsh(runtime, expectedVersion, onProgress)
+            com.jarves.mh.model.AgentKind.ANTIGRAVITY -> updateAgy(runtime, expectedVersion, onProgress)
+        }
+        onProgress(RuntimeInstallProgress("${agent.title} $expectedVersion is ready", 1f, event = RuntimeInstallEvent.COMPLETED))
+    }
+
+    private suspend fun updateClaude(
+        runtime: InstalledRuntime,
+        expectedVersion: String,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        val latest = JSONObject(fetchText("https://registry.npmjs.org/@anthropic-ai/claude-code/latest")).getString("version")
+        check(latest == expectedVersion) { "A newer Claude Code release appeared. Check again before updating." }
+        val base = "https://downloads.claude.ai/claude-code-releases/$latest"
+        val manifest = JSONObject(fetchText("$base/manifest.json"))
+        val checksum = manifest.getJSONObject("platforms").getJSONObject("linux-arm64").getString("checksum")
+        val downloaded = File(downloads, "claude-$latest")
+        downloadVerified("$base/linux-arm64/claude", downloaded, checksum) { bytes, total ->
+            val ratio = if (total > 0L) bytes.toFloat() / total else 0f
+            onProgress(RuntimeInstallProgress("Downloading Claude Code $latest", ratio * 0.9f, bytes, total.takeIf { it > 0L }, event = RuntimeInstallEvent.DOWNLOAD))
+        }
+        val staged = File(runtime.claude.parentFile, ".claude-$latest.installing")
+        downloaded.copyTo(staged, overwrite = true)
+        Os.chmod(staged.absolutePath, 0b111101101)
+        Os.rename(staged.absolutePath, runtime.claude.absolutePath)
+        downloaded.delete()
+        verifyGuest(runtime.proot, "${runtime.claude.path.removePrefix(rootfs.path)} --version", "Claude Code update verification failed")
+        marker.writeText(latest)
+    }
+
+    private suspend fun updateAgy(
+        runtime: InstalledRuntime,
+        expectedVersion: String,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        val manifest = fetchAgyManifest()
+        val latest = manifest.getString("version")
+        check(latest == expectedVersion) { "A newer Antigravity release appeared. Check again before updating." }
+        val downloaded = File(downloads, "antigravity-$latest-linux-arm64.tar.gz")
+        downloadVerified(manifest.getString("url"), downloaded, manifest.getString("sha512"), algorithm = "SHA-512") { bytes, total ->
+            val ratio = if (total > 0L) bytes.toFloat() / total else 0f
+            onProgress(RuntimeInstallProgress("Downloading Antigravity CLI $latest", ratio * 0.9f, bytes, total.takeIf { it > 0L }, event = RuntimeInstallEvent.DOWNLOAD))
+        }
+        val destination = File(rootfs, AGY_GUEST_PATH.removePrefix("/"))
+        var found = false
+        TarArchiveInputStream(GzipCompressorInputStream(BufferedInputStream(downloaded.inputStream()))).use { archive ->
+            var entry = archive.nextEntry
+            while (entry != null) {
+                if (entry.isFile && entry.name.removePrefix("./") == "antigravity") {
+                    val staged = File(destination.parentFile, ".agy-$latest.installing")
+                    FileOutputStream(staged).use { archive.copyTo(it) }
+                    Os.chmod(staged.absolutePath, 0b111101101)
+                    Os.rename(staged.absolutePath, destination.absolutePath)
+                    found = true
+                    break
+                }
+                entry = archive.nextEntry
+            }
+        }
+        downloaded.delete()
+        check(found) { "Antigravity update archive is incomplete" }
+        verifyGuest(runtime.proot, "$AGY_GUEST_PATH --version", "Antigravity update verification failed")
+        agyMarker.writeText(latest)
+    }
+
+    private suspend fun updateDsh(
+        runtime: InstalledRuntime,
+        expectedVersion: String,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        val latest = JSONObject(fetchText("https://registry.npmjs.org/@deepseek-ai/dsh/latest")).getString("version")
+        check(latest == expectedVersion) { "A newer DeepSeek Harness release appeared. Check again before updating." }
+        val quotedVersion = latest.replace(Regex("[^0-9A-Za-z.+-]"), "")
+        check(quotedVersion == latest) { "Invalid DeepSeek Harness version" }
+        runGuestCommand(
+            proot = runtime.proot,
+            command = "set -e; next=/usr/local/lib/dsh.updating; old=/usr/local/lib/dsh.previous; " +
+                "rm -rf \"${'$'}next\" \"${'$'}old\"; mkdir -p \"${'$'}next\"; " +
+                "cd \"${'$'}next\"; npm init -y >/dev/null; " +
+                "npm install --omit=dev --no-audit --no-fund @deepseek-ai/dsh@$quotedVersion; " +
+                "mv /usr/local/lib/dsh \"${'$'}old\"; " +
+                "if mv \"${'$'}next\" /usr/local/lib/dsh; then rm -rf \"${'$'}old\"; " +
+                "else mv \"${'$'}old\" /usr/local/lib/dsh; exit 1; fi",
+            displayCommand = "npm install @deepseek-ai/dsh@$quotedVersion",
+            fraction = 0.55f,
+            timeoutMs = 20 * 60 * 1_000L,
+            onProgress = onProgress,
+            failureMessage = "DeepSeek Harness update failed; the installed version was preserved",
+        )
+        dshMarker.writeText(latest)
+        dshAndroidCompatibilityMarker.delete()
+        ensureDshAndroidCompatibility()
+        verifyGuest(runtime.proot, "/usr/local/bin/dsh --profile headless --help", "DeepSeek Harness update verification failed")
+    }
+
+    private fun fetchAgyManifest(): JSONObject = JSONObject(
+        fetchText("https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_arm64.json"),
+    )
+
+    private fun isVersionNewer(candidate: String, current: String): Boolean {
+        fun parts(value: String) = Regex("\\d+").findAll(value).map { it.value.toIntOrNull() ?: 0 }.toList()
+        val left = parts(candidate)
+        val right = parts(current)
+        repeat(maxOf(left.size, right.size)) { index ->
+            val comparison = (left.getOrElse(index) { 0 }).compareTo(right.getOrElse(index) { 0 })
+            if (comparison != 0) return comparison > 0
+        }
+        return candidate != current && !candidate.contains("alpha", true) && !candidate.contains("rc", true)
+    }
+
+    private suspend fun ensureAgyInstalled(
+        proot: File,
+        fraction: Float,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        if (isAgentInstalled(com.jarves.mh.model.AgentKind.ANTIGRAVITY)) return
+        installRuntimeOverlay(
+            bundle = AGY_BUNDLE,
+            message = "Installing Antigravity CLI $AGY_VERSION",
+            from = fraction,
+            to = 0.995f,
+            onProgress = onProgress,
+            forceEmbedded = true,
+        )
+        verifyGuest(proot, "$AGY_GUEST_PATH --version", "Antigravity CLI verification failed")
+        agyMarker.writeText(AGY_VERSION)
+        require(isAgentInstalled(com.jarves.mh.model.AgentKind.ANTIGRAVITY)) {
+            "Antigravity CLI installation is incomplete"
+        }
+    }
 
     private suspend fun ensureDshInstalled(
         proot: File,
@@ -511,11 +772,12 @@ class RuntimeInstaller(private val context: Context) {
         from: Float,
         to: Float,
         onProgress: suspend (RuntimeInstallProgress) -> Unit,
+        forceEmbedded: Boolean = false,
     ) {
         // Stack overlays honor the same offline/online flavor as the Core bundle:
         // the offline APK ships every stack bundle inside its assets, while the
         // online APK fetches each one from the release URL on demand.
-        val archive = obtainRuntimeBundle(bundle, preferEmbedded = BuildConfig.OFFLINE_RUNTIME_BUNDLES, from, to * 0.8f + from * 0.2f, onProgress)
+        val archive = obtainRuntimeBundle(bundle, preferEmbedded = forceEmbedded || BuildConfig.OFFLINE_RUNTIME_BUNDLES, from, to * 0.8f + from * 0.2f, onProgress)
         onProgress(RuntimeInstallProgress(message, to * 0.8f + from * 0.2f, indeterminate = true))
         extractZstdTar(archive, rootfs)
         stripMacosMetadataArtifacts(rootfs)
@@ -1022,6 +1284,10 @@ class RuntimeInstaller(private val context: Context) {
         guestCommand: List<String>,
         guestWorkspacePath: String = "/workspace",
         emulateHardLinks: Boolean = true,
+        outputFile: File = File(context.cacheDir, "runtime-output-${System.nanoTime()}.log"),
+        pseudoTerminal: Boolean = false,
+        ptyRows: Int = 40,
+        ptyColumns: Int = 120,
     ): Process {
         require(
             guestWorkspacePath == "/workspace" ||
@@ -1091,7 +1357,10 @@ class RuntimeInstaller(private val context: Context) {
                 putAll(environment)
             },
             cwd = context.filesDir.absolutePath,
-            outputFile = File(context.cacheDir, "runtime-output-${System.nanoTime()}.log"),
+            outputFile = outputFile,
+            pseudoTerminal = pseudoTerminal,
+            ptyRows = ptyRows,
+            ptyColumns = ptyColumns,
         )
     }
 
@@ -1394,6 +1663,14 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
     private fun File.readTextOrNull(): String? = runCatching { readText().trim() }.getOrNull()
 
     companion object {
+        const val AGY_GUEST_PATH = "/root/.local/bin/agy"
+        const val GITHUB_CLI_GUEST_PATH = "/root/.local/bin/gh"
+        private const val AGY_VERSION = "1.1.27"
+        private const val AGY_RELEASE_URL = "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.27-5211191891591168/linux-arm/cli_linux_arm64.tar.gz"
+        private const val AGY_RELEASE_SHA512 = "ed45f6930785aa4b42f14e07ace1c9d91a94fb76e760f54acbd7d3d3951e1f957fd456a0dae2a3124dd9a3b689bf7afb7c9303a3e4ba95037fc10063424d9bf9"
+        private const val GITHUB_CLI_VERSION = "2.100.0"
+        private const val GITHUB_CLI_RELEASE_URL = "https://github.com/cli/cli/releases/download/v2.100.0/gh_2.100.0_linux_arm64.tar.gz"
+        private const val GITHUB_CLI_RELEASE_SHA256 = "ea4e7a581a32ccad6cc7923cb1576ac5859ba4b9a16ab22eb8f8a96e78e2e961"
         private const val LEGACY_README = "# Pocket Dev project\n\nThis project is managed locally on Android.\n"
         private const val LEGACY_INDEX = "<!doctype html><title>Pocket Dev</title><h1>Hello from Android</h1>\n"
         private const val ROOTFS_VERSION = "ubuntu-20.04.5-arm64"
@@ -1442,6 +1719,12 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
             fileName = "pocketdev-dsh-arm64-2026.09.1.tar.zst",
             sha256 = "88e6a23ba74e1cd74a2c923b7e0d6bd78ba4b7e5f8a9b649f12bf4ffe158cce5",
             compressedBytes = 27_752_194L,
+        )
+        private val AGY_BUNDLE = RuntimeBundle(
+            label = "Antigravity CLI",
+            fileName = "pocketdev-agy-arm64-2026.09.1.tar.zst",
+            sha256 = "a659ab9188956fc4721ca86fb21b5118e0e489f47a5e02ae6b4f2fb423659d78",
+            compressedBytes = 41_870_025L,
         )
         private const val MAX_TERMINAL_LINE = 500
         private const val MAX_COLLECTED_OUTPUT = 24_000

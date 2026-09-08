@@ -84,6 +84,7 @@ import androidx.compose.ui.unit.sp
 import com.jarves.mh.model.DevStack
 import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.ProviderProfile
+import com.jarves.mh.model.AgentKind
 import com.jarves.mh.network.ConnectionValidation
 import com.jarves.mh.network.DiscoveredModel
 import com.jarves.mh.network.ModelDiscoveryResult
@@ -289,6 +290,14 @@ private fun LegacySettingsScreen(
                                                 )
                                             }
                                         }
+                                    }
+                                    state.devStackBytesPerSecond?.takeIf { it > 0L }?.let { speed ->
+                                        Text(
+                                            "${formatBytes(speed)}/s",
+                                            fontSize = 11.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = PocketOrange,
+                                        )
                                     }
                                 } else if (index != DevStack.entries.lastIndex) {
                                     HorizontalDivider(
@@ -653,7 +662,13 @@ private fun LegacySettingsScreen(
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                         InfoRow(icon = Icons.Default.Terminal, label = "Linux Rootfs", value = "Ubuntu 20.04 PRoot")
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                        InfoRow(icon = Icons.Default.SmartToy, label = "Developer tools", value = "Claude Code + Node.js 24 + Python 3")
+                        InfoRow(
+                            icon = Icons.Default.SmartToy,
+                            label = "Installed agents",
+                            value = AgentKind.entries.mapNotNull { agent ->
+                                state.installedAgentVersions[agent]?.let { version -> "${agent.title} v$version" }
+                            }.joinToString(" · ").ifBlank { "No verified agent installation" },
+                        )
 
                         Spacer(Modifier.height(4.dp))
                         OutlinedButton(

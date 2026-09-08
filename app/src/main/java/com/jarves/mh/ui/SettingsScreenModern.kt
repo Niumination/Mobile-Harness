@@ -77,6 +77,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -95,6 +98,7 @@ import com.jarves.mh.model.providersForAgent
 import com.jarves.mh.network.ConnectionValidation
 import com.jarves.mh.network.DiscoveredModel
 import com.jarves.mh.network.ModelDiscoveryResult
+import com.jarves.mh.runtime.AntigravityAuthStatus
 import com.jarves.mh.ui.theme.AppThemeMode
 import com.jarves.mh.ui.theme.PocketOrange
 import kotlinx.coroutines.launch
@@ -118,6 +122,14 @@ fun SettingsScreen(
     onRemoveApiKey: (ProviderKind, String) -> List<ApiKeyInfo>,
     onInstallDevStack: (DevStack) -> Unit = {},
     onInstallAgent: (AgentKind) -> Unit = {},
+    onCheckAgentUpdates: () -> Unit = {},
+    onUpdateAgent: (AgentKind) -> Unit = {},
+    onStartAntigravityLogin: () -> Unit = {},
+    onSubmitAntigravityCode: (String) -> Unit = {},
+    onLogoutAntigravity: () -> Unit = {},
+    onRefreshAntigravityModels: () -> Unit = {},
+    onSetAntigravityModel: (String) -> Unit = {},
+    onSetAntigravityEffort: (String) -> Unit = {},
     initialDebugUpdateManifestUrl: String = "",
     onSetDebugUpdateManifestUrl: (String) -> Unit = {},
     onClearDebugUpdateManifestUrl: () -> Unit = {},
@@ -143,6 +155,7 @@ fun SettingsScreen(
     var isValidating by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
     var statusOk by remember { mutableStateOf(false) }
+    var antigravityCode by rememberSaveable { mutableStateOf("") }
     var terminalCleared by remember { mutableStateOf(false) }
     var showReliabilityHelp by rememberSaveable { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -347,18 +360,131 @@ fun SettingsScreen(
                             SelectionDot(state.agentKind == agent)
                         }
                     }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Agent updates", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                state.agentUpdateMessage ?: "Check official releases for all installed agents",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onCheckAgentUpdates,
+                            enabled = !state.agentUpdatesChecking && state.agentUpdating == null && state.agentInstalling == null,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
+                        ) {
+                            if (state.agentUpdatesChecking) {
+                                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.Refresh, null, modifier = Modifier.size(16.dp))
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (state.agentUpdatesChecking) "Checking" else "Check", fontSize = 12.sp)
+                        }
+                    }
+                    state.agentUpdates.forEach { (agent, update) ->
+                        val updating = state.agentUpdating == agent
+                        val downloaded = state.agentUpdateDownloadedBytes
+                        val total = state.agentUpdateTotalBytes
+                        val downloadFraction = if (updating && downloaded != null && total != null && total > 0L) {
+                            (downloaded.toFloat() / total).coerceIn(0f, 1f)
+                        } else state.agentUpdateProgress.coerceIn(0f, 1f)
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            color = PocketOrange.copy(alpha = 0.09f),
+                            border = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.32f)),
+                        ) {
+                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(agent.title, fontWeight = FontWeight.Bold)
+                                        Text(
+                                            "v${update.installedVersion}  →  v${update.latestVersion}",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Text("UPDATE", color = PocketOrange, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
+                                }
+                                if (updating) {
+                                    Text(
+                                        state.agentUpdateMessage.orEmpty(),
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    if (total != null && total > 0L) {
+                                        LinearProgressIndicator(
+                                            progress = { downloadFraction },
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                        Row(Modifier.fillMaxWidth()) {
+                                            Text(
+                                                "${formatTransferMb(downloaded ?: 0L)} / ${formatTransferMb(total)}",
+                                                modifier = Modifier.weight(1f),
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                            Text("${(downloadFraction * 100).toInt()}%", color = PocketOrange, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    } else {
+                                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                    }
+                                    state.agentUpdateBytesPerSecond?.takeIf { it > 0L }?.let { speed ->
+                                        Text(
+                                            "${formatTransferSpeed(speed)} · ${formatTransferEta(downloaded ?: 0L, total ?: 0L, speed)} remaining",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                } else {
+                                    Button(
+                                        onClick = { onUpdateAgent(agent) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        enabled = state.agentUpdating == null && state.agentInstalling == null,
+                                    ) { Text("Update ${agent.title}") }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
             item {
                 SettingsAccordion(
                     title = "AI connection",
-                    subtitle = "${state.provider.model.ifBlank { "No model" }} · ${state.provider.kind.title}",
+                    subtitle = if (state.agentKind == AgentKind.ANTIGRAVITY) {
+                        when (state.antigravityAuth.status) {
+                            AntigravityAuthStatus.SIGNED_IN -> state.antigravityAuth.accountEmail
+                                ?.let { "Connected as $it" } ?: "Google account connected"
+                            AntigravityAuthStatus.AWAITING_CODE -> "Waiting for authorization code"
+                            AntigravityAuthStatus.COMPLETING -> "Completing Google sign-in…"
+                            AntigravityAuthStatus.STARTING -> state.antigravityAuth.message ?: "Connecting…"
+                            else -> "Google sign-in required"
+                        }
+                    } else "${state.provider.model.ifBlank { "No model" }} · ${state.provider.kind.title}",
                     icon = Icons.Default.SmartToy,
                     expanded = expanded == SettingsSection.CONNECTION,
                     onClick = { toggle(SettingsSection.CONNECTION) },
                 ) {
-                    ConnectionSettings(
+                    if (state.agentKind == AgentKind.ANTIGRAVITY) {
+                        AntigravityConnectionSettings(
+                            state = state,
+                            code = antigravityCode,
+                            onCode = { antigravityCode = it },
+                            onStartLogin = onStartAntigravityLogin,
+                            onSubmitCode = { onSubmitAntigravityCode(antigravityCode); antigravityCode = "" },
+                            onLogout = onLogoutAntigravity,
+                            onRefreshModels = onRefreshAntigravityModels,
+                            onSetModel = onSetAntigravityModel,
+                            onSetEffort = onSetAntigravityEffort,
+                        )
+                    } else ConnectionSettings(
                         state = state,
                         selectedKind = selectedKind,
                         baseUrl = baseUrl,
@@ -480,8 +606,53 @@ fun SettingsScreen(
                             }
                         }
                         if (installing) {
-                            LinearProgressIndicator(progress = { state.devStackProgress }, modifier = Modifier.fillMaxWidth())
-                            Text(state.devStackMessage ?: "Installing…", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                            Spacer(Modifier.height(4.dp))
+                            LinearProgressIndicator(
+                                progress = { state.devStackProgress.coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth().height(7.dp),
+                                color = PocketOrange,
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                            )
+                            Spacer(Modifier.height(9.dp))
+                            state.devStackBytes?.let { (downloaded, total) ->
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                ) {
+                                    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                            Text(
+                                                "${formatTransferMb(downloaded)} of ${formatTransferMb(total)}",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontFamily = FontFamily.Monospace,
+                                            )
+                                            state.devStackBytesPerSecond?.takeIf { it > 0L }?.let { speed ->
+                                                Text(
+                                                    "${formatTransferSpeed(speed)} · ${formatTransferEta(downloaded, total, speed)} left",
+                                                    fontSize = 11.sp,
+                                                    color = PocketOrange,
+                                                    fontFamily = FontFamily.Monospace,
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            state.devStackMessage ?: "Downloading…",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            } ?: Text(
+                                state.devStackMessage ?: "Processing…",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
                         if (index != DevStack.entries.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     }
@@ -498,7 +669,26 @@ fun SettingsScreen(
                 ) {
                     RuntimeInfoRow("Architecture", "ARM64 (aarch64)")
                     RuntimeInfoRow("Environment", "Ubuntu 20.04 PRoot")
-                    RuntimeInfoRow("Agent", "Claude Code + Node.js 24")
+                    RuntimeInfoRow(
+                        "Active agent",
+                        state.agentKind.title + if (state.installedAgentVersions.containsKey(state.agentKind)) "" else " · Not installed",
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    Text(
+                        "Installed agents",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (state.installedAgentVersions.isEmpty()) {
+                        RuntimeInfoRow("Status", "No verified agent installation")
+                    } else {
+                        AgentKind.entries.forEach { agent ->
+                            state.installedAgentVersions[agent]?.let { version ->
+                                RuntimeInfoRow(agent.title, "v$version")
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(8.dp))
                     OutlinedButton(
                         onClick = { onClearTerminal(); terminalCleared = true },
@@ -599,6 +789,18 @@ fun SettingsScreen(
     }
 }
 
+private fun formatTransferMb(bytes: Long): String = "%.1f MB".format(bytes.coerceAtLeast(0L) / 1_048_576.0)
+
+private fun formatTransferSpeed(bytesPerSecond: Long): String = when {
+    bytesPerSecond >= 1_048_576L -> "%.1f MB/s".format(bytesPerSecond / 1_048_576.0)
+    else -> "%.0f KB/s".format(bytesPerSecond / 1_024.0)
+}
+
+private fun formatTransferEta(downloaded: Long, total: Long, bytesPerSecond: Long): String {
+    val seconds = ((total - downloaded).coerceAtLeast(0L) / bytesPerSecond.coerceAtLeast(1L)).coerceAtLeast(1L)
+    return if (seconds >= 60L) "${seconds / 60}m ${seconds % 60}s" else "${seconds}s"
+}
+
 @Composable
 private fun SettingsAccordion(
     title: String,
@@ -640,6 +842,114 @@ private fun SettingsAccordion(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun AntigravityConnectionSettings(
+    state: AppUiState,
+    code: String,
+    onCode: (String) -> Unit,
+    onStartLogin: () -> Unit,
+    onSubmitCode: () -> Unit,
+    onLogout: () -> Unit,
+    onRefreshModels: () -> Unit,
+    onSetModel: (String) -> Unit,
+    onSetEffort: (String) -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val auth = state.antigravityAuth
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Official Antigravity CLI", fontWeight = FontWeight.SemiBold)
+            Text(
+                auth.message ?: if (auth.status == AntigravityAuthStatus.SIGNED_IN) {
+                    auth.accountEmail?.let { "Connected as $it" } ?: "Google account connected"
+                } else "Sign in using Google's browser flow.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            when (auth.status) {
+                AntigravityAuthStatus.SIGNED_IN -> OutlinedButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) {
+                    Text("Log out of Antigravity")
+                }
+                AntigravityAuthStatus.STARTING, AntigravityAuthStatus.COMPLETING -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                AntigravityAuthStatus.AWAITING_CODE -> {
+                    auth.authorizationUrl?.let { url ->
+                        OutlinedButton(
+                            onClick = { clipboard.setText(AnnotatedString(url)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Copy Google sign-in URL") }
+                    }
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = onCode,
+                        label = { Text("One-time authorization code") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Button(onClick = onSubmitCode, enabled = code.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+                        Text("Complete sign-in")
+                    }
+                }
+                AntigravityAuthStatus.SIGNED_OUT, AntigravityAuthStatus.ERROR -> Button(
+                    onClick = onStartLogin,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (auth.status == AntigravityAuthStatus.ERROR) "Reconnect with Google" else "Sign in with Google") }
+            }
+        }
+    }
+
+    if (auth.status == AntigravityAuthStatus.SIGNED_IN) {
+        Text("Model", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        OutlinedTextField(
+            value = state.antigravityModel,
+            onValueChange = onSetModel,
+            label = { Text("Antigravity model ID") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedButton(
+            onClick = onRefreshModels,
+            enabled = !state.antigravityModelsLoading,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (state.antigravityModelsLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            else Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text("Refresh models")
+        }
+        state.antigravityModels.forEach { model ->
+            Row(
+                Modifier.fillMaxWidth().clickable { onSetModel(model) }.padding(vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(model, Modifier.weight(1f), fontSize = 12.sp)
+                SelectionDot(state.antigravityModel == model)
+            }
+        }
+        Text("Reasoning effort", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("low", "medium", "high").forEach { effort ->
+                OutlinedButton(onClick = { onSetEffort(effort) }, modifier = Modifier.weight(1f)) {
+                    Text(effort.replaceFirstChar(Char::uppercase))
+                }
+            }
+        }
+    }
+
+    Surface(color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f), shape = RoundedCornerShape(12.dp)) {
+        Text(
+            "Antigravity runs with automatic tool approval. It can edit files and execute commands inside the selected project. Review generated changes before keeping them.",
+            Modifier.fillMaxWidth().padding(12.dp),
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            fontSize = 11.sp,
+        )
     }
 }
 

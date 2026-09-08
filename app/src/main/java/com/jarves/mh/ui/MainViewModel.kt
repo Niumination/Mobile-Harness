@@ -6,6 +6,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.os.SystemClock
 import android.os.Build
+import android.system.Os
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.core.content.ContextCompat
@@ -33,8 +34,15 @@ import com.jarves.mh.model.generateQuickChatIdentity
 import com.jarves.mh.network.ConnectionValidation
 import com.jarves.mh.network.ModelDiscoveryResult
 import com.jarves.mh.network.ProviderApiClient
+import com.jarves.mh.network.GitHubRepository
 import com.jarves.mh.runtime.ClaudeRuntimeBridge
 import com.jarves.mh.runtime.DshRuntimeBridge
+import com.jarves.mh.runtime.AgentRegistry
+import com.jarves.mh.runtime.AgentUpdateInfo
+import com.jarves.mh.runtime.AntigravityAuthController
+import com.jarves.mh.runtime.AntigravityAuthState
+import com.jarves.mh.runtime.AntigravityAuthStatus
+import com.jarves.mh.runtime.AntigravityRuntimeBridge
 import com.jarves.mh.runtime.NativeSpawnProcess
 import com.jarves.mh.runtime.RuntimeInstallProgress
 import com.jarves.mh.runtime.RuntimeInstaller
@@ -48,12 +56,15 @@ import com.jarves.mh.update.AppUpdater
 import java.io.File
 import java.io.RandomAccessFile
 import java.net.UnknownHostException
+import java.net.URI
 import java.nio.file.Files
 import java.util.UUID
 import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -67,6 +78,7 @@ enum class StartupStage { CHECKING, SETUP_REQUIRED, INSTALLING, MODEL_SETUP, INI
 
 enum class ApiPingStatus { IDLE, PINGING, OK, FAILED }
 enum class AppUpdateStatus { AVAILABLE, PERMISSION_REQUIRED, DOWNLOADING, INSTALLING, ERROR }
+enum class GitHubAuthStatus { DISCONNECTED, STARTING, AWAITING_USER, CONNECTED, ERROR }
 
 data class TerminalOutputLine(
     val id: String = java.util.UUID.randomUUID().toString(),
@@ -100,6 +112,17 @@ private data class RuntimeRetryRequest(
     val provider: ProviderProfile,
 )
 
+private data class TranscriptWrite(
+    val projectId: String,
+    val chatId: String,
+    val messages: List<ChatMessage>,
+)
+
+private data class ImportedZipProject(
+    val project: Project,
+    val sourceAttachment: ChatAttachment,
+)
+
 data class AppUiState(
     val startupStage: StartupStage = StartupStage.CHECKING,
     val startupProgress: Float = 0f,
@@ -117,6 +140,17 @@ data class AppUiState(
     val apiPingStatus: ApiPingStatus = ApiPingStatus.IDLE,
     val apiPingMessage: String? = null,
     val projects: List<Project> = emptyList(),
+    val projectImporting: Boolean = false,
+    val projectImportMessage: String? = null,
+    val gitCloneRunning: Boolean = false,
+    val gitCloneMessage: String? = null,
+    val githubAuthStatus: GitHubAuthStatus = GitHubAuthStatus.DISCONNECTED,
+    val githubLogin: String? = null,
+    val githubUserCode: String? = null,
+    val githubVerificationUri: String? = null,
+    val githubMessage: String? = null,
+    val githubRepositories: List<GitHubRepository> = emptyList(),
+    val githubRepositoriesLoading: Boolean = false,
     val activeProject: Project? = null,
     val projectChats: List<ProjectChat> = emptyList(),
     val activeChatId: String? = null,
@@ -159,10 +193,25 @@ data class AppUiState(
     val devStackMessage: String? = null,
     val devStackProgress: Float = 0f,
     val devStackBytes: Pair<Long, Long>? = null,
+    val devStackBytesPerSecond: Long? = null,
     val agentKind: AgentKind = AgentKind.CLAUDE_CODE,
+    val installedAgentVersions: Map<AgentKind, String> = emptyMap(),
     val agentInstalling: AgentKind? = null,
     val agentMessage: String? = null,
     val agentProgress: Float = 0f,
+    val agentUpdates: Map<AgentKind, AgentUpdateInfo> = emptyMap(),
+    val agentUpdatesChecking: Boolean = false,
+    val agentUpdating: AgentKind? = null,
+    val agentUpdateMessage: String? = null,
+    val agentUpdateProgress: Float = 0f,
+    val agentUpdateDownloadedBytes: Long? = null,
+    val agentUpdateTotalBytes: Long? = null,
+    val agentUpdateBytesPerSecond: Long? = null,
+    val antigravityAuth: AntigravityAuthState = AntigravityAuthState(),
+    val antigravityModel: String = "",
+    val antigravityEffort: String = "high",
+    val antigravityModels: List<String> = emptyList(),
+    val antigravityModelsLoading: Boolean = false,
     val androidBuildRunning: Boolean = false,
     val androidBuildMessage: String? = null,
     val appUpdate: AppUpdateInfo? = null,
@@ -177,9 +226,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val preferences = AppPreferences(application)
     private val claudeRuntime = ClaudeRuntimeBridge(application) { profile -> vault.get(profile.kind.name) }
     private val dshRuntime = DshRuntimeBridge(application) { profile -> vault.get(profile.kind.name) }
-    private fun activeRuntime(): com.jarves.mh.runtime.RuntimeBridge =
-        if (_state.value.agentKind == AgentKind.DEEPSEEK_HARNESS) dshRuntime else claudeRuntime
     private val installer = RuntimeInstaller(application)
+    private val antigravityRuntime = AntigravityRuntimeBridge(
+        application,
+        model = { _state.value.antigravityModel },
+        effort = { _state.value.antigravityEffort },
+        conversationId = { projectId ->
+            _state.value.activeChatId?.let { preferences.loadAgentConversation(AgentKind.ANTIGRAVITY, projectId, it) }
+        },
+        saveConversationId = { projectId, id ->
+            _state.value.activeChatId?.let { preferences.saveAgentConversation(AgentKind.ANTIGRAVITY, projectId, it, id) }
+        },
+    )
+    private val agentRegistry = AgentRegistry.builtIns(claudeRuntime, dshRuntime, antigravityRuntime)
+    private fun activeRuntime(): com.jarves.mh.runtime.RuntimeBridge = agentRegistry.require(_state.value.agentKind).runtime
     private val providerApi = ProviderApiClient()
     private fun appUpdater(): AppUpdater = AppUpdater(
         getApplication(),
@@ -190,10 +250,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var projectTerminalProjectId: String? = null
     @Volatile private var projectTerminalStopRequested: Boolean = false
     @Volatile private var setupCompletionHandled: Boolean = false
+    @Volatile private var githubAuthProcess: Process? = null
+    private var githubAuthJob: kotlinx.coroutines.Job? = null
+    @Volatile private var lastOpenedAntigravityAuthUrl: String? = null
     private var activeRuntimeRequest: RuntimeRetryRequest? = null
     private val failedApiKeyIds = mutableSetOf<String>()
-    private val initialAgentKind = runCatching { AgentKind.valueOf(preferences.agentKind) }
-        .getOrDefault(AgentKind.CLAUDE_CODE)
+    private val transcriptWrites = Channel<TranscriptWrite>(Channel.UNLIMITED)
+    private val initialAgentKind = AgentKind.fromStored(preferences.agentKind)
+    private val antigravityAuthController = AntigravityAuthController(
+        application,
+        preferences.antigravitySignedIn,
+        preferences.antigravityAccountEmail,
+    ) { signedIn, email ->
+        preferences.antigravitySignedIn = signedIn
+        preferences.antigravityAccountEmail = email.orEmpty()
+        if (!signedIn) preferences.clearAgentConversations(AgentKind.ANTIGRAVITY)
+    }
     private val _state = MutableStateFlow(
         AppUiState(
             onboardingComplete = preferences.onboardingComplete,
@@ -202,9 +274,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             provider = preferences.loadProvider(vault, initialAgentKind),
             activeApiKeyName = vault.list(preferences.loadProvider(vault, initialAgentKind).kind.name)
                 .firstOrNull(ApiKeyInfo::isActive)?.name,
+            antigravityAuth = AntigravityAuthState(
+                status = if (preferences.antigravitySignedIn) AntigravityAuthStatus.SIGNED_IN else AntigravityAuthStatus.SIGNED_OUT,
+                message = preferences.antigravityAccountEmail.takeIf(String::isNotBlank)?.let { "Connected as $it" },
+                accountEmail = preferences.antigravityAccountEmail.takeIf(String::isNotBlank),
+            ),
+            antigravityModel = preferences.antigravityModel,
+            antigravityEffort = preferences.antigravityEffort,
             themeMode = runCatching { com.jarves.mh.ui.theme.AppThemeMode.valueOf(preferences.themeMode.uppercase()) }
                 .getOrDefault(com.jarves.mh.ui.theme.AppThemeMode.DARK),
             projects = preferences.loadProjects(),
+            githubAuthStatus = GitHubAuthStatus.DISCONNECTED,
+            githubLogin = preferences.githubLogin.takeIf(String::isNotBlank),
             selectedDevStacks = preferences.selectedDevStacks.mapNotNull { name ->
                 runCatching { DevStack.valueOf(name) }.getOrNull()
             }.toSet() + DevStack.WEB,
@@ -212,8 +293,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     init {
+        // GitHub's official CLI owns its OAuth credential. Remove credentials from
+        // the retired custom OAuth implementation and discover the real CLI status.
+        vault.remove(LEGACY_GITHUB_TOKEN_KEY)
+        viewModelScope.launch { refreshGitHubConnection() }
         RuntimeSetupController.restore(application)
+        viewModelScope.launch(Dispatchers.IO) {
+            for (write in transcriptWrites) {
+                preferences.saveMessages(write.projectId, write.chatId, write.messages)
+            }
+        }
         viewModelScope.launch { dshRuntime.events.collect(::onRuntimeEvent) }
+        viewModelScope.launch { antigravityRuntime.events.collect(::onRuntimeEvent) }
+        viewModelScope.launch {
+            antigravityAuthController.state.collect { auth ->
+                _state.update { it.copy(antigravityAuth = auth) }
+                auth.authorizationUrl?.takeIf { it != lastOpenedAntigravityAuthUrl }?.let { url ->
+                    lastOpenedAntigravityAuthUrl = url
+                    runCatching {
+                        getApplication<Application>().startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                        )
+                    }.onFailure {
+                        _state.update { state -> state.copy(toastMessage = "Could not open the browser. Copy the sign-in URL instead.") }
+                    }
+                }
+            }
+        }
+        if (antigravityAuthController.hasOfficialCredential() &&
+            (!preferences.antigravitySignedIn || preferences.antigravityAccountEmail.isBlank())
+        ) {
+            viewModelScope.launch { antigravityAuthController.beginLogin() }
+        }
         if (!preferences.legacySeededCredentialRemoved) {
             vault.remove(ProviderKind.CUSTOM.name)
             preferences.legacySeededCredentialRemoved = true
@@ -771,7 +882,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return workspace.walkTopDown()
             .maxDepth(4)
             .filter { it.isFile && it.name in settingsNames }
-            .map(File::getParentFile)
+            .mapNotNull(File::getParentFile)
             .sortedBy { it.absolutePath.length }
             .firstOrNull { root ->
                 root.walkTopDown()
@@ -836,6 +947,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun configureBridgeRoots(projectId: String, rootPath: String) {
         claudeRuntime.configureProjectRoot(projectId, rootPath)
         dshRuntime.configureProjectRoot(projectId, rootPath)
+        antigravityRuntime.configureProjectRoot(projectId, rootPath)
     }
 
     init {
@@ -859,7 +971,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         _state.update { current ->
-            current.copy(installedDevStacks = if (installed) installer.installedStacks() else current.installedDevStacks)
+            current.copy(
+                installedDevStacks = if (installed) installer.installedStacks() else current.installedDevStacks,
+                installedAgentVersions = if (installed) installer.installedAgentVersions() else emptyMap(),
+            )
         }
         when {
             !installed && setupSnapshot.status == RuntimeSetupStatus.ERROR -> onSetupSnapshot(setupSnapshot)
@@ -996,7 +1111,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // Keep the successful loading state visible long enough to be understandable.
             val remaining = MINIMUM_INITIALIZATION_SCREEN_MS - (SystemClock.elapsedRealtime() - startedAt)
             if (remaining > 0) delay(remaining)
-            _state.update { it.copy(startupStage = StartupStage.READY, startupProgress = 1f) }
+            _state.update {
+                it.copy(
+                    startupStage = StartupStage.READY,
+                    startupProgress = 1f,
+                    installedAgentVersions = installer.installedAgentVersions(),
+                )
+            }
             pingApi()
             checkForAppUpdate()
         } else {
@@ -1117,6 +1238,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         pingApi()
     }
 
+    fun finishAntigravityOnboarding() {
+        check(_state.value.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN) {
+            "Sign in to Antigravity first"
+        }
+        preferences.onboardingComplete = true
+        _state.update { it.copy(onboardingComplete = true, startupStage = StartupStage.READY) }
+    }
+
     fun updateProvider(profile: ProviderProfile, secret: String) = finishOnboarding(profile, secret)
 
     fun finishBackgroundSetup() {
@@ -1127,7 +1256,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Called from the first-launch setup screen; persists the agent choice for setup and Settings. */
     fun selectAgent(kind: AgentKind) {
         if (_state.value.agentKind == kind) return
-        preferences.agentKind = kind.name
+        if (_state.value.isRunning) {
+            _state.update { it.copy(toastMessage = "Stop the current agent before switching.") }
+            return
+        }
+        preferences.agentKind = kind.stableId
         _state.update { current ->
             preferences.saveProvider(current.provider, current.agentKind)
             val provider = preferences.loadProvider(vault, kind)
@@ -1141,24 +1274,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Installs the other agent on demand (Settings) with live progress, then switches to it. */
     fun installAgent(kind: AgentKind) {
-        if (_state.value.agentInstalling != null || _state.value.agentKind == kind && installer.isAgentInstalled(kind)) return
-        preferences.agentKind = kind.name
-        _state.update { current ->
-            preferences.saveProvider(current.provider, current.agentKind)
-            val provider = preferences.loadProvider(vault, kind)
-            current.copy(
-                agentKind = kind,
-                provider = provider,
-                activeApiKeyName = vault.list(provider.kind.name).firstOrNull(ApiKeyInfo::isActive)?.name,
-                agentInstalling = kind,
-                agentMessage = "Preparing ${kind.title}…",
-                agentProgress = 0f,
-            )
+        if (_state.value.agentInstalling != null) return
+        if (_state.value.isRunning) {
+            _state.update { it.copy(toastMessage = "Stop the current agent before switching.") }
+            return
         }
+        if (installer.isAgentInstalled(kind)) {
+            selectAgent(kind)
+            return
+        }
+        _state.update { it.copy(agentInstalling = kind, agentMessage = "Preparing ${kind.title}…", agentProgress = 0f) }
         viewModelScope.launch {
             val result = runCatching {
                 withContext(Dispatchers.IO) {
-                    installer.ensureAgentInstalled(kind) { progress ->
+                    agentRegistry.require(kind).install(installer) { progress ->
                         _state.update { current ->
                             current.copy(
                                 agentMessage = progress.message,
@@ -1168,9 +1297,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
-            result.onSuccess { preferences.dshVersion = installer.dshVersion }
+            result.onSuccess {
+                if (kind == AgentKind.DEEPSEEK_HARNESS) preferences.dshVersion = installer.dshVersion
+                selectAgent(kind)
+            }
             _state.update { current ->
                 current.copy(
+                    installedAgentVersions = installer.installedAgentVersions(),
                     agentInstalling = null,
                     agentProgress = 0f,
                     agentMessage = result.fold(
@@ -1178,6 +1311,158 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         onFailure = { _ -> result.exceptionOrNull()?.message?.take(200) ?: "Could not install ${kind.title}" },
                     ),
                 )
+            }
+        }
+    }
+
+    fun checkAgentUpdates() {
+        if (_state.value.agentUpdatesChecking || _state.value.agentUpdating != null || _state.value.isRunning) return
+        _state.update { it.copy(agentUpdatesChecking = true, agentUpdateMessage = "Checking official agent releases…") }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { installer.checkAgentUpdates() } }
+            _state.update {
+                it.copy(
+                    agentUpdates = result.getOrDefault(emptyMap()),
+                    agentUpdatesChecking = false,
+                    agentUpdateMessage = result.fold(
+                        onSuccess = { updates -> if (updates.isEmpty()) "All installed agents are up to date" else "${updates.size} agent update${if (updates.size == 1) "" else "s"} available" },
+                        onFailure = { error -> error.message?.take(200) ?: "Could not check agent updates" },
+                    ),
+                )
+            }
+        }
+    }
+
+    fun updateAgent(kind: AgentKind) {
+        val update = _state.value.agentUpdates[kind] ?: return
+        if (_state.value.agentUpdating != null || _state.value.agentInstalling != null || _state.value.isRunning) return
+        _state.update {
+            it.copy(
+                agentUpdating = kind,
+                agentUpdateMessage = "Preparing ${kind.title} ${update.latestVersion}…",
+                agentUpdateProgress = 0f,
+                agentUpdateDownloadedBytes = null,
+                agentUpdateTotalBytes = null,
+                agentUpdateBytesPerSecond = null,
+            )
+        }
+        viewModelScope.launch {
+            var sampleBytes = 0L
+            var sampleAt = SystemClock.elapsedRealtime()
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    installer.updateAgent(kind, update.latestVersion) { progress ->
+                        val now = SystemClock.elapsedRealtime()
+                        val bytes = progress.downloadedBytes
+                        val elapsed = now - sampleAt
+                        val speed = if (bytes != null && elapsed >= 500L) {
+                            ((bytes - sampleBytes).coerceAtLeast(0L) * 1_000L / elapsed.coerceAtLeast(1L)).also {
+                                sampleBytes = bytes
+                                sampleAt = now
+                            }
+                        } else _state.value.agentUpdateBytesPerSecond
+                        _state.update {
+                            it.copy(
+                                agentUpdateMessage = progress.message,
+                                agentUpdateProgress = progress.fraction.coerceIn(0f, 1f),
+                                agentUpdateDownloadedBytes = bytes ?: it.agentUpdateDownloadedBytes,
+                                agentUpdateTotalBytes = progress.totalBytes ?: it.agentUpdateTotalBytes,
+                                agentUpdateBytesPerSecond = speed,
+                            )
+                        }
+                    }
+                }
+            }
+            _state.update { current ->
+                current.copy(
+                    installedAgentVersions = installer.installedAgentVersions(),
+                    agentUpdates = if (result.isSuccess) current.agentUpdates - kind else current.agentUpdates,
+                    agentUpdating = null,
+                    agentUpdateMessage = result.fold(
+                        onSuccess = { "${kind.title} updated to ${update.latestVersion}" },
+                        onFailure = { error -> error.message?.take(220) ?: "Could not update ${kind.title}" },
+                    ),
+                    agentUpdateProgress = if (result.isSuccess) 1f else 0f,
+                    agentUpdateDownloadedBytes = null,
+                    agentUpdateTotalBytes = null,
+                    agentUpdateBytesPerSecond = null,
+                )
+            }
+        }
+    }
+
+    fun startAntigravityLogin() {
+        if (_state.value.agentInstalling != null || _state.value.isRunning) return
+        lastOpenedAntigravityAuthUrl = null
+        viewModelScope.launch { antigravityAuthController.beginLogin() }
+    }
+
+    fun submitAntigravityCode(code: String) {
+        runCatching { antigravityAuthController.submitCode(code) }
+            .onFailure { error -> _state.update { it.copy(toastMessage = error.message ?: "Could not submit the code") } }
+    }
+
+    fun logoutAntigravity() {
+        viewModelScope.launch {
+            runCatching { antigravityAuthController.logout() }
+                .onFailure { error -> _state.update { it.copy(toastMessage = error.message ?: "Could not sign out") } }
+        }
+    }
+
+    fun setAntigravityModel(model: String) {
+        preferences.antigravityModel = model
+        _state.update { it.copy(antigravityModel = model) }
+    }
+
+    fun setAntigravityEffort(effort: String) {
+        if (effort !in setOf("low", "medium", "high")) return
+        preferences.antigravityEffort = effort
+        _state.update { it.copy(antigravityEffort = effort) }
+    }
+
+    fun refreshAntigravityModels() {
+        if (_state.value.antigravityModelsLoading || !installer.isAgentInstalled(AgentKind.ANTIGRAVITY)) return
+        _state.update { it.copy(antigravityModelsLoading = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                val runtime = installer.installedRuntime()
+                val workspace = File(getApplication<Application>().filesDir, "workspaces/antigravity-models").apply { mkdirs() }
+                val process = installer.process(
+                    runtime.proot,
+                    runtime.rootfs,
+                    workspace,
+                    emptyMap(),
+                    listOf(com.jarves.mh.runtime.RuntimeInstaller.AGY_GUEST_PATH, "models"),
+                    guestWorkspacePath = "/workspace/antigravity-models",
+                    emulateHardLinks = false,
+                )
+                while (process.isAlive) delay(50)
+                check(process.waitFor() == 0) { "Could not list Antigravity models" }
+                val output = (process as? NativeSpawnProcess)?.outputFile?.readText().orEmpty()
+                output.lineSequence()
+                    .map { sanitizeTerminalOutput(it).trim() }
+                    .mapNotNull { line -> line.split(Regex("\\s+"), limit = 2).firstOrNull() }
+                    .filter { it.matches(Regex("[a-z0-9][a-z0-9._-]+")) }
+                    .distinct()
+                    .toList()
+                    .also { check(it.isNotEmpty()) { "Antigravity returned no models" } }
+            }
+            withContext(Dispatchers.Main) {
+                _state.update { current ->
+                    result.fold(
+                        onSuccess = { models -> current.copy(
+                            antigravityModelsLoading = false,
+                            antigravityModels = models,
+                            antigravityModel = current.antigravityModel.ifBlank { models.first() },
+                        ).also {
+                            if (current.antigravityModel.isBlank()) preferences.antigravityModel = models.first()
+                        } },
+                        onFailure = { error -> current.copy(
+                            antigravityModelsLoading = false,
+                            toastMessage = error.message ?: "Could not load Antigravity models",
+                        ) },
+                    )
+                }
             }
         }
     }
@@ -1201,19 +1486,43 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 devStackMessage = "Preparing ${stack.label}…",
                 devStackProgress = 0f,
                 devStackBytes = null,
+                devStackBytesPerSecond = null,
             )
         }
         viewModelScope.launch {
+            var sampleBytes = 0L
+            var sampleTime = android.os.SystemClock.elapsedRealtime()
+            var latestSpeed: Long? = null
             val result = runCatching {
                 withContext(Dispatchers.IO) {
                     installer.ensureStackInstalled(stack) { progress ->
+                        val transfer = progress.totalBytes?.let { total ->
+                            (progress.downloadedBytes ?: 0L) to total
+                        }
+                        if (transfer != null) {
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            val elapsed = now - sampleTime
+                            val delta = transfer.first - sampleBytes
+                            if (delta < 0L) {
+                                sampleBytes = transfer.first
+                                sampleTime = now
+                                latestSpeed = null
+                            } else if (elapsed >= 500L) {
+                                latestSpeed = (delta * 1_000L / elapsed).coerceAtLeast(0L)
+                                sampleBytes = transfer.first
+                                sampleTime = now
+                            }
+                        } else {
+                            sampleBytes = 0L
+                            sampleTime = android.os.SystemClock.elapsedRealtime()
+                            latestSpeed = null
+                        }
                         _state.update { current ->
                             current.copy(
                                 devStackMessage = progress.message,
                                 devStackProgress = progress.fraction.coerceIn(0f, 1f),
-                                devStackBytes = progress.totalBytes?.let { total ->
-                                    (progress.downloadedBytes ?: 0L) to total
-                                },
+                                devStackBytes = transfer,
+                                devStackBytesPerSecond = latestSpeed,
                             )
                         }
                     }
@@ -1225,6 +1534,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     installedDevStacks = if (result.isSuccess) current.installedDevStacks + stack else current.installedDevStacks,
                     devStackProgress = 0f,
                     devStackBytes = null,
+                    devStackBytesPerSecond = null,
                     devStackMessage = result.fold(
                         onSuccess = { "${stack.label} tools are ready" },
                         onFailure = { _ -> result.exceptionOrNull()?.message?.take(200) ?: "Could not install ${stack.label}" },
@@ -1249,6 +1559,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun pingApi() {
+        if (_state.value.agentKind == AgentKind.ANTIGRAVITY) {
+            val connected = _state.value.antigravityAuth.status == AntigravityAuthStatus.SIGNED_IN
+            _state.update {
+                it.copy(
+                    apiPingStatus = if (connected) ApiPingStatus.OK else ApiPingStatus.FAILED,
+                    apiPingMessage = if (connected) "Antigravity Google account connected" else "Antigravity needs Google sign-in",
+                )
+            }
+            return
+        }
         val profile = _state.value.provider
         if (profile.baseUrl.isBlank() || profile.model.isBlank()) return
         if (_state.value.apiPingStatus == ApiPingStatus.PINGING) return
@@ -1433,6 +1753,550 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(projects = listOf(project) + it.projects) }
         preferences.saveProjects(_state.value.projects)
         openProject(project)
+    }
+
+    fun importZipProject(uri: Uri) {
+        if (_state.value.projectImporting || _state.value.isRunning) return
+        _state.update { it.copy(projectImporting = true, projectImportMessage = "Reading project archive…") }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { extractImportedProject(uri) } }
+            result.onSuccess { imported ->
+                val project = imported.project
+                val firstChat = ProjectChat(title = "New chat")
+                preferences.saveProjectChats(project.id, listOf(firstChat))
+                _state.update { current ->
+                    current.copy(
+                        projects = listOf(project) + current.projects,
+                        projectImporting = false,
+                        projectImportMessage = null,
+                        toastMessage = "${project.name} imported successfully",
+                    )
+                }
+                preferences.saveProjects(_state.value.projects)
+                openProject(project)
+                _state.update { it.copy(pendingAttachments = listOf(imported.sourceAttachment)) }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        projectImporting = false,
+                        projectImportMessage = null,
+                        toastMessage = "Import failed: ${error.message?.take(180) ?: "Invalid ZIP archive"}",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun extractImportedProject(uri: Uri): ImportedZipProject {
+        val app = getApplication<Application>()
+        val resolver = app.contentResolver
+        var archiveName = "Imported project.zip"
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME).takeIf { it >= 0 }?.let { index ->
+                    archiveName = cursor.getString(index) ?: archiveName
+                }
+            }
+        }
+        val identity = generateQuickChatIdentity(_state.value.projects.mapTo(mutableSetOf()) { it.slug })
+        val projectId = UUID.randomUUID().toString()
+        val destination = File(app.filesDir, "workspaces/$projectId")
+        destination.mkdirs()
+        val destinationPath = destination.canonicalFile.toPath()
+        val availableLimit = (destination.usableSpace * 8L / 10L).coerceAtMost(MAX_IMPORTED_PROJECT_BYTES)
+        var extractedBytes = 0L
+        var entries = 0
+        try {
+            val source = resolver.openInputStream(uri) ?: error("The selected ZIP could not be opened")
+            source.buffered().use { input ->
+                ZipInputStream(input).use { zip ->
+                    while (true) {
+                        val entry = zip.nextEntry ?: break
+                        entries++
+                        require(entries <= MAX_IMPORTED_ZIP_ENTRIES) { "The ZIP contains too many files" }
+                        val entryName = entry.name.replace('\\', '/').trimStart('/')
+                        require(entryName.isNotBlank() && '\u0000' !in entryName) { "The ZIP contains an invalid path" }
+                        if (entryName.startsWith("__MACOSX/") || entryName.endsWith("/.DS_Store") || entryName == ".DS_Store") {
+                            zip.closeEntry()
+                            continue
+                        }
+                        val target = File(destination, entryName).canonicalFile
+                        require(target.toPath().startsWith(destinationPath)) { "The ZIP contains an unsafe path" }
+                        if (entry.isDirectory) {
+                            target.mkdirs()
+                        } else {
+                            target.parentFile?.mkdirs()
+                            target.outputStream().buffered().use { output ->
+                                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                                while (true) {
+                                    val count = zip.read(buffer)
+                                    if (count < 0) break
+                                    extractedBytes += count
+                                    require(extractedBytes <= availableLimit) { "The extracted project is too large for available storage" }
+                                    output.write(buffer, 0, count)
+                                }
+                            }
+                            if (entry.time > 0) target.setLastModified(entry.time)
+                        }
+                        zip.closeEntry()
+                    }
+                }
+            }
+            require(entries > 0 && destination.walkTopDown().any { it.isFile }) { "The ZIP does not contain project files" }
+            val preliminary = Project(
+                id = projectId,
+                name = identity.displayName,
+                description = "Imported project workspace",
+                language = "General",
+                slug = identity.slug,
+                kind = ProjectKind.QUICK_PROJECT,
+            )
+            val nestedRoot = detectNestedProjectRoot(preliminary)
+            val projectRoot = nestedRoot?.let { File(destination, it) } ?: destination
+            val metadata = detectImportedProjectMetadata(projectRoot)
+            val safeArchiveName = sanitizeAttachmentName(archiveName).let { name ->
+                if (name.endsWith(".zip", ignoreCase = true)) name else "$name.zip"
+            }
+            val archiveFolder = File(projectRoot, ".pocketdev/imports").apply { mkdirs() }
+            val archivedSource = File(archiveFolder, safeArchiveName)
+            var sourceBytes = 0L
+            resolver.openInputStream(uri)?.buffered()?.use { input ->
+                archivedSource.outputStream().buffered().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        sourceBytes += count
+                        require(extractedBytes + sourceBytes <= availableLimit) { "The imported project is too large for available storage" }
+                        output.write(buffer, 0, count)
+                    }
+                }
+            } ?: error("The selected ZIP could not be preserved")
+            val project = preliminary.copy(
+                description = metadata.first,
+                language = metadata.second,
+                rootPath = nestedRoot.orEmpty(),
+            )
+            return ImportedZipProject(
+                project = project,
+                sourceAttachment = ChatAttachment(
+                    displayName = archiveName.take(120),
+                    relativePath = archivedSource.relativeTo(projectRoot).invariantSeparatorsPath,
+                    mimeType = "application/zip",
+                    sizeBytes = sourceBytes,
+                ),
+            )
+        } catch (error: Throwable) {
+            destination.deleteRecursively()
+            throw error
+        }
+    }
+
+    private fun detectImportedProjectMetadata(root: File): Pair<String, String> {
+        val names = root.walkTopDown().maxDepth(3).filter(File::isFile).map { it.name.lowercase() }.toSet()
+        return when {
+            names.any { it == "settings.gradle.kts" || it == "build.gradle.kts" } -> "Imported Gradle project" to "Kotlin"
+            names.any { it == "settings.gradle" || it == "build.gradle" } -> "Imported Gradle project" to "Java"
+            "package.json" in names && names.any { it == "tsconfig.json" || it.endsWith(".ts") || it.endsWith(".tsx") } -> "Imported web project" to "TypeScript"
+            "package.json" in names -> "Imported web project" to "JavaScript"
+            names.any { it == "pyproject.toml" || it == "requirements.txt" || it.endsWith(".py") } -> "Imported Python project" to "Python"
+            names.any { it == "cargo.toml" || it.endsWith(".rs") } -> "Imported Rust project" to "Rust"
+            names.any { it == "go.mod" || it.endsWith(".go") } -> "Imported Go project" to "Go"
+            else -> "Imported ZIP project" to "General"
+        }
+    }
+
+    fun clonePublicGitRepository(url: String) {
+        cloneGitRepository(url = url, repositoryName = null, branch = null, useGitHubCli = false)
+    }
+
+    fun cloneGitHubRepository(repository: GitHubRepository) {
+        if (_state.value.githubAuthStatus != GitHubAuthStatus.CONNECTED) {
+            _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.DISCONNECTED, githubMessage = "Connect GitHub again") }
+            return
+        }
+        cloneGitRepository(repository.cloneUrl, repository.fullName, repository.defaultBranch, useGitHubCli = true)
+    }
+
+    private fun cloneGitRepository(url: String, repositoryName: String?, branch: String?, useGitHubCli: Boolean) {
+        if (_state.value.gitCloneRunning || _state.value.projectImporting || _state.value.isRunning) return
+        val normalized = runCatching { validateGitUrl(url) }.getOrElse { error ->
+            _state.update { it.copy(toastMessage = error.message ?: "Enter a valid public HTTPS Git URL") }
+            return
+        }
+        _state.update { it.copy(gitCloneRunning = true, gitCloneMessage = "Connecting to Git repository…") }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val identity = generateQuickChatIdentity(_state.value.projects.mapTo(mutableSetOf()) { it.slug })
+                    val projectId = UUID.randomUUID().toString()
+                    val workspace = File(getApplication<Application>().filesDir, "workspaces/$projectId").apply { mkdirs() }
+                    val output = File(getApplication<Application>().cacheDir, "git-clone-${System.nanoTime()}.log")
+                    try {
+                        val environment = mutableMapOf(
+                            "GIT_TERMINAL_PROMPT" to "0",
+                            "GIT_LFS_SKIP_SMUDGE" to "1",
+                            "GH_PROMPT_DISABLED" to "1",
+                            "GH_NO_UPDATE_NOTIFIER" to "1",
+                        )
+                        val installed = installer.installedRuntime()
+                        val command = if (useGitHubCli && repositoryName != null) {
+                            buildList {
+                                addAll(listOf(RuntimeInstaller.GITHUB_CLI_GUEST_PATH, "repo", "clone", repositoryName, ".", "--", "--progress", "--single-branch"))
+                                branch?.takeIf(String::isNotBlank)?.let { addAll(listOf("--branch", it)) }
+                            }
+                        } else {
+                            buildList {
+                                addAll(listOf("git", "clone", "--progress", "--single-branch"))
+                                branch?.takeIf(String::isNotBlank)?.let { addAll(listOf("--branch", it)) }
+                                add(normalized)
+                                add(".")
+                            }
+                        }
+                        _state.update { it.copy(gitCloneMessage = "Cloning ${repositoryName ?: normalized.substringAfterLast('/').removeSuffix(".git")}…") }
+                        val process = installer.process(
+                            installed.proot,
+                            installed.rootfs,
+                            workspace,
+                            environment,
+                            command,
+                            guestWorkspacePath = "/workspace/${identity.slug}",
+                            outputFile = output,
+                        )
+                        val exit = process.waitFor()
+                        val details = output.readText().trim()
+                        check(exit == 0) { details.takeLast(600).ifBlank { "Git clone failed with exit code $exit" } }
+                        val metadata = detectImportedProjectMetadata(workspace)
+                        Project(
+                            id = projectId,
+                            name = identity.displayName,
+                            description = repositoryName?.let { "GitHub · $it" } ?: "Imported Git repository",
+                            language = metadata.second,
+                            slug = identity.slug,
+                            kind = ProjectKind.QUICK_PROJECT,
+                        )
+                    } catch (error: Throwable) {
+                        workspace.deleteRecursively()
+                        throw error
+                    } finally {
+                        output.delete()
+                    }
+                }
+            }
+            result.onSuccess { project ->
+                val chat = ProjectChat(title = "New chat")
+                preferences.saveProjectChats(project.id, listOf(chat))
+                _state.update { current -> current.copy(projects = listOf(project) + current.projects) }
+                preferences.saveProjects(_state.value.projects)
+                openProject(project)
+                _state.update { it.copy(gitCloneRunning = false, gitCloneMessage = null, toastMessage = "Repository cloned successfully") }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        gitCloneRunning = false,
+                        gitCloneMessage = null,
+                        toastMessage = "Clone failed: ${error.message?.lineSequence()?.lastOrNull()?.take(180) ?: "Unknown error"}",
+                    )
+                }
+            }
+        }
+    }
+
+    private fun validateGitUrl(value: String): String {
+        val clean = value.trim()
+        val uri = URI(clean)
+        require(uri.scheme.equals("https", ignoreCase = true)) { "Only HTTPS Git URLs are supported" }
+        require(uri.userInfo == null && uri.fragment == null && uri.host?.isNotBlank() == true) { "Enter a valid HTTPS Git URL without credentials" }
+        require(uri.host != "localhost" && uri.host != "127.0.0.1" && uri.host != "::1") { "Local Git URLs are not supported" }
+        require(uri.path.count { it == '/' } >= 2) { "The URL must identify a Git repository" }
+        return uri.toASCIIString()
+    }
+
+    fun startGitHubLogin() {
+        if (_state.value.githubAuthStatus == GitHubAuthStatus.STARTING || _state.value.githubAuthStatus == GitHubAuthStatus.AWAITING_USER) return
+        _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.STARTING, githubMessage = "Preparing official GitHub sign-in…") }
+        startGitHubForegroundOperation()
+        githubAuthJob = viewModelScope.launch {
+            try {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    installer.ensureGitHubCliInstalled { progress ->
+                        _state.update { it.copy(githubMessage = progress.message) }
+                    }
+                    val runtime = installer.installedRuntime()
+                    val outputFile = File(getApplication<Application>().cacheDir, "github-auth-${System.nanoTime()}.log")
+                    val workspace = File(getApplication<Application>().filesDir, "workspaces/github-auth").apply { mkdirs() }
+                    val process = installer.process(
+                        runtime.proot,
+                        runtime.rootfs,
+                        workspace,
+                        githubCliEnvironment(),
+                        listOf(
+                            RuntimeInstaller.GITHUB_CLI_GUEST_PATH,
+                            "auth", "login",
+                            "--hostname", "github.com",
+                            "--git-protocol", "https",
+                            "--web",
+                            "--insecure-storage",
+                        ),
+                        guestWorkspacePath = "/workspace/github-auth",
+                        outputFile = outputFile,
+                    )
+                    githubAuthProcess = process
+                    var offset = 0L
+                    val captured = StringBuilder()
+                    var browserOpened = false
+                    try {
+                        while (process.isAlive || outputFile.length() > offset) {
+                            if (outputFile.length() > offset) {
+                                val count = (outputFile.length() - offset).coerceAtMost(16L * 1024).toInt()
+                                val bytes = ByteArray(count)
+                                RandomAccessFile(outputFile, "r").use { file -> file.seek(offset); file.readFully(bytes) }
+                                offset += count
+                                captured.append(bytes.toString(Charsets.UTF_8))
+                                val clean = sanitizeTerminalOutput(captured.toString()).takeLast(20_000)
+                                val code = GITHUB_DEVICE_CODE.find(clean)?.value
+                                if (code != null && !browserOpened) {
+                                    browserOpened = true
+                                    _state.update {
+                                        it.copy(
+                                            githubAuthStatus = GitHubAuthStatus.AWAITING_USER,
+                                            githubUserCode = code,
+                                            githubVerificationUri = GITHUB_DEVICE_URL,
+                                            githubMessage = "Enter this one-time code on GitHub",
+                                        )
+                                    }
+                                    openExternalUrl(GITHUB_DEVICE_URL)
+                                }
+                            } else {
+                                delay(100)
+                            }
+                        }
+                        val exit = process.waitFor()
+                        check(exit == 0) {
+                            sanitizeTerminalOutput(captured.toString()).lineSequence().lastOrNull { it.isNotBlank() }
+                                ?: "GitHub sign-in failed (exit $exit)"
+                        }
+                    } finally {
+                        githubAuthProcess = null
+                        outputFile.delete()
+                    }
+                    githubAccountLogin() ?: error("GitHub connected, but the account could not be identified")
+                }
+            }
+            result.onSuccess { login ->
+                preferences.githubLogin = login
+                _state.update {
+                    it.copy(
+                        githubAuthStatus = GitHubAuthStatus.CONNECTED,
+                        githubLogin = login,
+                        githubUserCode = null,
+                        githubVerificationUri = null,
+                        githubMessage = "Connected as @$login",
+                    )
+                }
+                refreshGitHubRepositories()
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        githubAuthStatus = GitHubAuthStatus.ERROR,
+                        githubUserCode = null,
+                        githubVerificationUri = null,
+                        githubMessage = error.message?.take(240) ?: "GitHub sign-in failed",
+                    )
+                }
+            }
+            } finally {
+                stopGitHubForegroundOperation()
+                githubAuthJob = null
+            }
+        }
+    }
+
+    fun generateNewGitHubCode() {
+        githubAuthProcess?.destroy()
+        githubAuthJob?.cancel()
+        githubAuthProcess = null
+        githubAuthJob = null
+        stopGitHubForegroundOperation()
+        _state.update {
+            it.copy(
+                githubAuthStatus = GitHubAuthStatus.DISCONNECTED,
+                githubUserCode = null,
+                githubVerificationUri = null,
+                githubMessage = "Generating a new GitHub code…",
+            )
+        }
+        startGitHubLogin()
+    }
+
+    fun refreshGitHubRepositories() {
+        if (_state.value.githubAuthStatus != GitHubAuthStatus.CONNECTED) return
+        if (_state.value.githubRepositoriesLoading) return
+        _state.update { it.copy(githubRepositoriesLoading = true, githubMessage = "Loading repositories…") }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { runCatching { githubRepositoriesFromCli() } }
+            result.onSuccess { repositories ->
+                _state.update {
+                    it.copy(
+                        githubRepositories = repositories,
+                        githubRepositoriesLoading = false,
+                        githubMessage = "${repositories.size} repositories available",
+                    )
+                }
+            }.onFailure { error ->
+                _state.update {
+                    it.copy(
+                        githubRepositoriesLoading = false,
+                        githubMessage = error.message ?: "Could not load GitHub repositories",
+                    )
+                }
+            }
+        }
+    }
+
+    fun disconnectGitHub() {
+        if (_state.value.githubAuthStatus == GitHubAuthStatus.STARTING) return
+        val login = _state.value.githubLogin
+        _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.STARTING, githubMessage = "Signing out of GitHub…") }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val command = buildList {
+                        addAll(listOf("auth", "logout", "--hostname", "github.com"))
+                        login?.takeIf(String::isNotBlank)?.let { addAll(listOf("--user", it)) }
+                    }
+                    val output = runGitHubCli(command)
+                    check(output.first == 0) { output.second.lineSequence().lastOrNull { it.isNotBlank() } ?: "GitHub logout failed" }
+                }
+            }
+            result.onSuccess {
+                preferences.githubLogin = ""
+                _state.update {
+                    it.copy(
+                        githubAuthStatus = GitHubAuthStatus.DISCONNECTED,
+                        githubLogin = null,
+                        githubUserCode = null,
+                        githubVerificationUri = null,
+                        githubRepositories = emptyList(),
+                        githubMessage = "Signed out",
+                    )
+                }
+            }.onFailure { error ->
+                _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.ERROR, githubMessage = error.message ?: "Could not sign out") }
+            }
+        }
+    }
+
+    private suspend fun refreshGitHubConnection() = withContext(Dispatchers.IO) {
+        if (!installer.isGitHubCliInstalled()) return@withContext
+        val login = runCatching { githubAccountLogin() }.getOrNull()
+        if (login.isNullOrBlank()) {
+            preferences.githubLogin = ""
+            _state.update { it.copy(githubAuthStatus = GitHubAuthStatus.DISCONNECTED, githubLogin = null) }
+        } else {
+            preferences.githubLogin = login
+            _state.update {
+                it.copy(
+                    githubAuthStatus = GitHubAuthStatus.CONNECTED,
+                    githubLogin = login,
+                    githubMessage = "Connected as @$login",
+                )
+            }
+        }
+    }
+
+    private fun githubCliEnvironment(): Map<String, String> = mapOf(
+        "GH_PROMPT_DISABLED" to "1",
+        "GH_NO_UPDATE_NOTIFIER" to "1",
+        // Android PRoot has no Secret Service. This keeps the official gh-owned
+        // credential in PocketDev's private Linux home instead of exporting it.
+        "BROWSER" to "/bin/false",
+    )
+
+    private fun runGitHubCli(arguments: List<String>): Pair<Int, String> {
+        check(installer.isGitHubCliInstalled()) { "GitHub CLI is not installed" }
+        val runtime = installer.installedRuntime()
+        val outputFile = File(getApplication<Application>().cacheDir, "github-cli-${System.nanoTime()}.log")
+        val workspace = File(getApplication<Application>().filesDir, "workspaces/github-auth").apply { mkdirs() }
+        return try {
+            val process = installer.process(
+                runtime.proot,
+                runtime.rootfs,
+                workspace,
+                githubCliEnvironment(),
+                listOf(RuntimeInstaller.GITHUB_CLI_GUEST_PATH) + arguments,
+                guestWorkspacePath = "/workspace/github-auth",
+                outputFile = outputFile,
+            )
+            val exit = process.waitFor()
+            exit to sanitizeTerminalOutput(outputFile.takeIf(File::isFile)?.readText().orEmpty()).trim()
+        } finally {
+            outputFile.delete()
+        }
+    }
+
+    private fun githubAccountLogin(): String? {
+        val (exit, output) = runGitHubCli(listOf("api", "user", "--jq", ".login"))
+        return output.lineSequence().lastOrNull { it.isNotBlank() }?.trim().takeIf { exit == 0 && !it.isNullOrBlank() }
+    }
+
+    private fun githubRepositoriesFromCli(): List<GitHubRepository> {
+        val endpoint = "user/repos?visibility=all&affiliation=owner,collaborator,organization_member&sort=updated&per_page=100"
+        val (exit, output) = runGitHubCli(listOf("api", "--paginate", "--slurp", endpoint))
+        check(exit == 0) { output.lineSequence().lastOrNull { it.isNotBlank() } ?: "Could not load GitHub repositories" }
+        val pages = JSONArray(output)
+        val repositories = LinkedHashMap<String, GitHubRepository>()
+        for (pageIndex in 0 until pages.length()) {
+            val page = pages.optJSONArray(pageIndex) ?: continue
+            for (index in 0 until page.length()) {
+                val item = page.optJSONObject(index) ?: continue
+                val fullName = item.optString("full_name").takeIf(String::isNotBlank) ?: continue
+                repositories[fullName] = GitHubRepository(
+                    fullName = fullName,
+                    cloneUrl = item.optString("clone_url", "https://github.com/$fullName.git"),
+                    private = item.optBoolean("private"),
+                    defaultBranch = item.optString("default_branch", "main"),
+                    description = item.optString("description"),
+                    updatedAt = item.optString("updated_at"),
+                )
+            }
+        }
+        return repositories.values.toList()
+    }
+
+    private fun openExternalUrl(url: String) {
+        runCatching {
+            getApplication<Application>().startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }.onFailure {
+            _state.update { state -> state.copy(toastMessage = "Could not open the browser. Copy the URL instead.") }
+        }
+    }
+
+    private fun startGitHubForegroundOperation() {
+        ContextCompat.startForegroundService(
+            getApplication(),
+            Intent(getApplication(), com.jarves.mh.runtime.RuntimeExecutionService::class.java)
+                .setAction(com.jarves.mh.runtime.RuntimeExecutionService.ACTION_START)
+                .putExtra(com.jarves.mh.runtime.RuntimeExecutionService.EXTRA_PROJECT_NAME, "GitHub sign-in")
+                .putExtra(com.jarves.mh.runtime.RuntimeExecutionService.EXTRA_TITLE, "Connecting GitHub")
+                .putExtra(com.jarves.mh.runtime.RuntimeExecutionService.EXTRA_CAN_STOP, false),
+        )
+    }
+
+    private fun stopGitHubForegroundOperation() {
+        runCatching {
+            getApplication<Application>().startService(
+                Intent(getApplication(), com.jarves.mh.runtime.RuntimeExecutionService::class.java)
+                    .setAction(com.jarves.mh.runtime.RuntimeExecutionService.ACTION_CANCELLED),
+            )
+        }.onFailure {
+            getApplication<Application>().stopService(
+                Intent(getApplication(), com.jarves.mh.runtime.RuntimeExecutionService::class.java),
+            )
+        }
     }
 
     fun renameProject(projectId: String, newName: String) {
@@ -1828,6 +2692,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendPrompt(prompt: String) {
         val project = state.value.activeProject ?: return
+        if (_state.value.agentKind == AgentKind.ANTIGRAVITY &&
+            _state.value.antigravityAuth.status != AntigravityAuthStatus.SIGNED_IN) {
+            _state.update { it.copy(toastMessage = "Sign in to Antigravity from Settings before starting a task.") }
+            return
+        }
         if (_state.value.agentKind == AgentKind.DEEPSEEK_HARNESS && _state.value.provider.kind == ProviderKind.CLAUDE) {
             _state.update { it.copy(toastMessage = "Claude subscription login is not supported by DeepSeek Harness — pick a key-based provider in Settings.") }
             return
@@ -2020,6 +2889,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
+    /** Adds the complete request duration to the response produced after the latest user message. */
+    private fun attachTaskDuration(current: AppUiState, finishedAt: Long): AppUiState {
+        val startedAt = current.taskStartedAtMillis ?: return current
+        val lastUserIndex = current.messages.indexOfLast { it.fromUser }
+        val responseIndex = current.messages.indices.lastOrNull { index ->
+            index > lastUserIndex && !current.messages[index].fromUser && current.messages[index].text.isNotBlank()
+        } ?: return current
+        val updated = current.messages.toMutableList()
+        updated[responseIndex] = updated[responseIndex].copy(
+            workedMillis = (finishedAt - startedAt).coerceAtLeast(1L),
+        )
+        return current.copy(messages = updated)
+    }
+
     private fun appendWorkItem(current: AppUiState, item: ActivityItem): AppUiState {
         if (isNoisyRuntimeItem(item)) return current
         return current.copy(
@@ -2030,6 +2913,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun onRuntimeEvent(event: RuntimeEvent) {
+        if (event is RuntimeEvent.SessionFailed && _state.value.agentKind == AgentKind.ANTIGRAVITY &&
+            (event.reason.contains("sign-in", true) || event.reason.contains("authentication", true))) {
+            antigravityAuthController.invalidateSession(event.reason)
+        }
         if (event is RuntimeEvent.SessionFailed && retryWithNextApiKey(event)) return
         _state.update { current ->
             if (!current.isRunning) {
@@ -2184,29 +3071,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     liveThinking = false,
                     workSegmentStartedAtMillis = current.workSegmentStartedAtMillis ?: System.currentTimeMillis(),
                 )
-                is RuntimeEvent.SessionCompleted -> finishWorkSegment(current).copy(
-                    isRunning = false,
-                    activeSessionId = null,
-                    activity = listOf(ActivityItem("Task completed", "Claude Code finished successfully")) +
-                        current.activity.map { if (!it.isComplete) it.copy(isComplete = true) else it },
-                    taskFinishedAtMillis = System.currentTimeMillis(),
-                    currentTaskRequest = null,
-                )
-                is RuntimeEvent.SessionFailed -> finishWorkSegment(
-                    appendWorkItem(current, ActivityItem("Task stopped", event.reason)),
-                ).copy(
-                    isRunning = false,
-                    activeSessionId = null,
-                    pendingApproval = null,
-                    toastMessage = event.reason.takeIf { reason ->
-                        reason.contains("user not found", true) ||
-                            reason.contains("API key", true) ||
-                            reason.contains("authentication", true)
-                    },
-                    activity = listOf(ActivityItem("Task stopped", event.reason)) + current.activity,
-                    taskFinishedAtMillis = System.currentTimeMillis(),
-                    currentTaskRequest = null,
-                )
+                is RuntimeEvent.SessionCompleted -> {
+                    val finishedAt = System.currentTimeMillis()
+                    attachTaskDuration(finishWorkSegment(current, finishedAt), finishedAt).copy(
+                        isRunning = false,
+                        activeSessionId = null,
+                        activity = listOf(ActivityItem("Task completed", "${current.agentKind.title} finished successfully")) +
+                            current.activity.map { if (!it.isComplete) it.copy(isComplete = true) else it },
+                        taskFinishedAtMillis = finishedAt,
+                        currentTaskRequest = null,
+                    )
+                }
+                is RuntimeEvent.SessionFailed -> {
+                    val finishedAt = System.currentTimeMillis()
+                    attachTaskDuration(
+                        finishWorkSegment(
+                            appendWorkItem(current, ActivityItem("Task stopped", event.reason)),
+                            finishedAt,
+                        ),
+                        finishedAt,
+                    ).copy(
+                        isRunning = false,
+                        activeSessionId = null,
+                        pendingApproval = null,
+                        toastMessage = event.reason.takeIf { reason ->
+                            reason.contains("user not found", true) ||
+                                reason.contains("API key", true) ||
+                                reason.contains("authentication", true)
+                        },
+                        activity = listOf(ActivityItem("Task stopped", event.reason)) + current.activity,
+                        taskFinishedAtMillis = finishedAt,
+                        currentTaskRequest = null,
+                    )
+                }
             }
         }
         if (event is RuntimeEvent.SessionCompleted || event is RuntimeEvent.SessionFailed) {
@@ -2217,13 +3114,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.value.activeProject?.id?.let { touchProject(it) }
             refreshProjectFiles()
         }
-        if (event is RuntimeEvent.AssistantDelta || event is RuntimeEvent.SessionCompleted || event is RuntimeEvent.SessionFailed) {
-            persistMessages()
-        }
+        // Save every visible reasoning/tool transition, not only assistant text and
+        // final results. If Android kills the process, the last displayed timeline
+        // is restored as an interrupted work block rather than disappearing.
+        persistMessages(includeLiveProcess = true)
     }
 
     private fun retryWithNextApiKey(event: RuntimeEvent.SessionFailed): Boolean {
         val current = _state.value
+        if (current.agentKind == AgentKind.ANTIGRAVITY) return false
         if (!current.isRunning || current.activeSessionId != event.sessionId) return false
         if (!isApiKeyFailure(event.reason)) return false
         val request = activeRuntimeRequest ?: return false
@@ -2273,13 +3172,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         preferences.saveProjects(_state.value.projects)
     }
 
-    private fun persistMessages() {
-        val project = _state.value.activeProject ?: return
-        val chatId = _state.value.activeChatId ?: return
-        val msgs = _state.value.messages
-        viewModelScope.launch(Dispatchers.IO) {
-            preferences.saveMessages(project.id, chatId, msgs)
+    private fun persistMessages(includeLiveProcess: Boolean = true) {
+        val current = _state.value
+        val project = current.activeProject ?: return
+        val chatId = current.activeChatId ?: return
+        val liveItems = if (includeLiveProcess) current.liveProcess.filterNot(::isNoisyRuntimeItem) else emptyList()
+        val messages = if (liveItems.isEmpty() && !current.liveThinking) {
+            current.messages
+        } else {
+            val startedAt = current.workSegmentStartedAtMillis ?: current.taskStartedAtMillis ?: System.currentTimeMillis()
+            current.messages + ChatMessage(
+                id = "interrupted-${current.activeSessionId ?: chatId}",
+                fromUser = false,
+                text = "",
+                workItems = liveItems.map { it.copy(isComplete = true) } + ActivityItem(
+                    "Task interrupted",
+                    "The agent process stopped before reporting completion. Continue this chat to resume its official session.",
+                ),
+                workedMillis = (System.currentTimeMillis() - startedAt).coerceAtLeast(0L),
+            )
         }
+        transcriptWrites.trySend(TranscriptWrite(project.id, chatId, messages))
     }
 
     private fun updateActiveChatTitle(prompt: String) {
@@ -2310,6 +3223,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val MAX_PROJECT_TERMINAL_OUTPUT = 200_000
         private const val MAX_ATTACHMENTS_PER_MESSAGE = 5
         private const val MAX_ATTACHMENT_BYTES = 25L * 1024L * 1024L
+        private const val MAX_IMPORTED_PROJECT_BYTES = 8L * 1024L * 1024L * 1024L
+        private const val MAX_IMPORTED_ZIP_ENTRIES = 100_000
+        private const val LEGACY_GITHUB_TOKEN_KEY = "GITHUB_APP"
+        private const val GITHUB_DEVICE_URL = "https://github.com/login/device"
+        private val GITHUB_DEVICE_CODE = Regex("\\b[A-Z0-9]{4}-[A-Z0-9]{4}\\b")
         private const val TEST_PROVIDER_DEFAULTS_VERSION = 1
         private const val TEST_OPENROUTER_BASE_URL = "https://openrouter.ai/api"
         private const val TEST_OPENROUTER_MODEL = "stealth/ox-alpha"

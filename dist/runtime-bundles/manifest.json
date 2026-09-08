@@ -41,6 +41,15 @@
         "Global ARM64 AAPT2 override"
       ]
     },
+    "agy": {
+      "version": "2026.09.1",
+      "file": "pocketdev-agy-arm64-2026.09.1.tar.zst",
+      "sha256": "a659ab9188956fc4721ca86fb21b5118e0e489f47a5e02ae6b4f2fb423659d78",
+      "compressedBytes": 41870025,
+      "uncompressedBytes": 200048640,
+      "includes": ["Antigravity CLI 1.1.27 ARM64", "Version marker"],
+      "excludes": ["OAuth credentials", "Settings", "Conversations", "Projects", "Device data"]
+    },
     "dsh": {
       "version": "2026.09.1",
       "file": "pocketdev-dsh-arm64-2026.09.1.tar.zst",

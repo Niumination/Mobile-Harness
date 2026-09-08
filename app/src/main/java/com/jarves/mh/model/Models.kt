@@ -41,20 +41,36 @@ enum class ProviderKind(
  * official DeepSeek Harness (`dsh`) installed on demand.
  */
 enum class AgentKind(
+    val stableId: String,
     val title: String,
     val subtitle: String,
     val downloadNote: String,
 ) {
     CLAUDE_CODE(
+        "claude-code",
         "Claude Code",
         "Anthropic's coding agent · broad provider support",
         "Included in the Core runtime",
     ),
     DEEPSEEK_HARNESS(
+        "deepseek-harness",
         "DeepSeek Harness",
         "Official DeepSeek coding agent · API-key providers",
         "Additional ~28 MB runtime bundle",
     ),
+    ANTIGRAVITY(
+        "antigravity",
+        "Antigravity CLI",
+        "Google's official coding agent · Google account",
+        "39.9 MB",
+    ),
+    ;
+
+    companion object {
+        fun fromStored(value: String?): AgentKind = entries.firstOrNull {
+            it.stableId == value || it.name == value
+        } ?: CLAUDE_CODE
+    }
 }
 
 /** Provider kinds usable with [AgentKind.DEEPSEEK_HARNESS]. Claude OAuth login has no dsh equivalent. */
@@ -71,6 +87,7 @@ val DEEPSEEK_HARNESS_PROVIDERS: Set<ProviderKind> = setOf(
 fun providersForAgent(agent: AgentKind): List<ProviderKind> = when (agent) {
     AgentKind.DEEPSEEK_HARNESS -> ProviderKind.entries.filter { it in DEEPSEEK_HARNESS_PROVIDERS }
     AgentKind.CLAUDE_CODE -> ProviderKind.entries.filterNot { it == ProviderKind.OPENCODE_ZEN }
+    AgentKind.ANTIGRAVITY -> emptyList()
 }
 
 data class ProviderProfile(

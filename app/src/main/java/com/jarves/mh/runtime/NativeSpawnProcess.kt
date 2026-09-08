@@ -4,6 +4,7 @@ import android.os.ParcelFileDescriptor
 import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.InputStream
 import java.io.OutputStream
 
@@ -11,6 +12,7 @@ internal class NativeSpawnProcess private constructor(
     private val pid: Int,
     internal val outputFile: File,
     private val stdin: OutputStream,
+    private val outputPump: Thread? = null,
 ) : Process() {
     @Volatile private var result: Int? = null
 
@@ -20,7 +22,10 @@ internal class NativeSpawnProcess private constructor(
 
     override fun waitFor(): Int {
         result?.let { return it }
-        return NativeSpawn.waitFor(pid, false).also { result = it }
+        return NativeSpawn.waitFor(pid, false).also {
+            result = it
+            outputPump?.join(1_000)
+        }
     }
 
     override fun exitValue(): Int {
@@ -47,17 +52,41 @@ internal class NativeSpawnProcess private constructor(
     override fun isAlive(): Boolean = runCatching { exitValue(); false }.getOrDefault(true)
 
     companion object {
-        fun start(argv: List<String>, environment: Map<String, String>, cwd: String, outputFile: File): NativeSpawnProcess {
+        fun start(
+            argv: List<String>,
+            environment: Map<String, String>,
+            cwd: String,
+            outputFile: File,
+            pseudoTerminal: Boolean = false,
+            ptyRows: Int = 40,
+            ptyColumns: Int = 120,
+        ): NativeSpawnProcess {
             outputFile.parentFile?.mkdirs()
+            if (pseudoTerminal) outputFile.delete()
             val spawned = NativeSpawn.spawn(
                 argv.toTypedArray(),
                 environment.map { "${it.key}=${it.value}" }.toTypedArray(),
                 cwd,
                 outputFile.absolutePath,
+                pseudoTerminal,
+                ptyRows,
+                ptyColumns,
             )
-            check(spawned.size == 2 && spawned[0] > 0) { "Native runtime launch failed" }
+            check(spawned.size == 3 && spawned[0] > 0) { "Native runtime launch failed" }
             val input = ParcelFileDescriptor.AutoCloseOutputStream(ParcelFileDescriptor.adoptFd(spawned[1]))
-            return NativeSpawnProcess(spawned[0], outputFile, input)
+            val pump = spawned[2].takeIf { it >= 0 }?.let { outputFd ->
+                Thread({
+                    runCatching {
+                        ParcelFileDescriptor.AutoCloseInputStream(ParcelFileDescriptor.adoptFd(outputFd)).use { source ->
+                            FileOutputStream(outputFile, false).use { destination -> source.copyTo(destination) }
+                        }
+                    }
+                }, "pocket-pty-output").apply {
+                    isDaemon = true
+                    start()
+                }
+            }
+            return NativeSpawnProcess(spawned[0], outputFile, input, pump)
         }
     }
 }
@@ -69,7 +98,15 @@ private object NativeSpawn {
         System.loadLibrary("pocketspawn")
     }
 
-    external fun spawn(argv: Array<String>, environment: Array<String>, cwd: String, outputFile: String): IntArray
+    external fun spawn(
+        argv: Array<String>,
+        environment: Array<String>,
+        cwd: String,
+        outputFile: String,
+        pseudoTerminal: Boolean,
+        ptyRows: Int,
+        ptyColumns: Int,
+    ): IntArray
     external fun waitFor(pid: Int, noHang: Boolean): Int
     external fun kill(pid: Int, signal: Int): Int
 }

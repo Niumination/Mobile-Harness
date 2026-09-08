@@ -33,8 +33,55 @@ class AppPreferences(private val context: Context) {
 
     /** Coding agent engine the user picked during setup. Absent = pre-agent-choice install → Claude. */
     var agentKind: String
-        get() = preferences.getString("agent_kind", "CLAUDE_CODE") ?: "CLAUDE_CODE"
+        get() = preferences.getString("agent_kind", AgentKind.CLAUDE_CODE.stableId) ?: AgentKind.CLAUDE_CODE.stableId
         set(value) { preferences.edit().putString("agent_kind", value).apply() }
+
+    var antigravityModel: String
+        get() = preferences.getString("agent_antigravity_model", "") ?: ""
+        set(value) { preferences.edit().putString("agent_antigravity_model", value).apply() }
+
+    var antigravityEffort: String
+        get() = preferences.getString("agent_antigravity_effort", "high") ?: "high"
+        set(value) { preferences.edit().putString("agent_antigravity_effort", value).apply() }
+
+    var antigravitySignedIn: Boolean
+        get() = preferences.getBoolean("agent_antigravity_signed_in", false)
+        set(value) { preferences.edit().putBoolean("agent_antigravity_signed_in", value).apply() }
+
+    var antigravityAccountEmail: String
+        get() = preferences.getString("agent_antigravity_account_email", "") ?: ""
+        set(value) { preferences.edit().putString("agent_antigravity_account_email", value).apply() }
+
+    var githubLogin: String
+        get() = preferences.getString("github_login", "") ?: ""
+        set(value) { preferences.edit().putString("github_login", value).apply() }
+
+    fun saveAgentConversation(agent: AgentKind, projectId: String, chatId: String, conversationId: String?) {
+        val key = agentConversationKey(agent, projectId, chatId)
+        preferences.edit().apply {
+            if (conversationId.isNullOrBlank()) remove(key) else putString(key, conversationId)
+        }.commit()
+    }
+
+    fun loadAgentConversation(agent: AgentKind, projectId: String, chatId: String): String? =
+        preferences.getString(agentConversationKey(agent, projectId, chatId), null)
+
+    fun clearAgentConversations(agent: AgentKind) {
+        val stable = agent.stableId
+        val keys = preferences.all.keys.filter { key ->
+            key.startsWith("agent_conversation_${stable}_") ||
+                key.startsWith("agent_conversation_v2_${stable}_")
+        }
+        if (keys.isEmpty()) return
+        preferences.edit().apply { keys.forEach(::remove) }.apply()
+    }
+
+    private fun agentConversationKey(agent: AgentKind, projectId: String, chatId: String): String {
+        // Antigravity v2 sessions are created with an explicit CLI project so
+        // old default-project conversations cannot redirect writes to scratch.
+        val version = if (agent == AgentKind.ANTIGRAVITY) "v2_" else ""
+        return "agent_conversation_${version}${agent.stableId}_${projectId}_$chatId"
+    }
 
     /** Pinned dsh version recorded when DeepSeek Harness was installed. */
     var dshVersion: String
@@ -134,7 +181,7 @@ class AppPreferences(private val context: Context) {
         )
     }
 
-    private fun providerPrefix(agent: AgentKind): String = "provider_${agent.name.lowercase()}_"
+    private fun providerPrefix(agent: AgentKind): String = "provider_${agent.stableId.replace('-', '_')}_"
 
     fun saveProjects(projects: List<Project>) {
         val arr = JSONArray()
@@ -257,6 +304,7 @@ class AppPreferences(private val context: Context) {
         return listOf(chat)
     }
 
+    @Synchronized
     fun saveMessages(projectId: String, chatId: String, messages: List<ChatMessage>) {
         val arr = JSONArray()
         messages.forEach { m ->
@@ -290,7 +338,13 @@ class AppPreferences(private val context: Context) {
             })
         }
         val projectDir = File(chatsDir, projectId).also { it.mkdirs() }
-        File(projectDir, "$chatId.json").writeText(arr.toString())
+        val destination = File(projectDir, "$chatId.json")
+        val temporary = File(projectDir, ".$chatId.json.tmp")
+        temporary.writeText(arr.toString())
+        if (!temporary.renameTo(destination)) {
+            temporary.copyTo(destination, overwrite = true)
+            temporary.delete()
+        }
     }
 
     fun loadMessages(projectId: String, chatId: String): List<ChatMessage> {

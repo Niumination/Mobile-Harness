@@ -240,5 +240,8 @@ class AgentProviderPresetTest {
     fun agentKindsAreStable() {
         assertEquals(AgentKind.CLAUDE_CODE, AgentKind.valueOf("CLAUDE_CODE"))
         assertEquals(AgentKind.DEEPSEEK_HARNESS, AgentKind.valueOf("DEEPSEEK_HARNESS"))
+        assertEquals(AgentKind.ANTIGRAVITY, AgentKind.fromStored("antigravity"))
+        assertEquals(AgentKind.CLAUDE_CODE, AgentKind.fromStored("CLAUDE_CODE"))
+        assertEquals(AgentKind.DEEPSEEK_HARNESS, AgentKind.fromStored("DEEPSEEK_HARNESS"))
     }
 }
