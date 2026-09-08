@@ -68,6 +68,18 @@ object RuntimeLaunchConfigBuilder {
                 if (profile.kind == com.jarves.mh.model.ProviderKind.LLM_ROUTER) {
                     environment["ANTHROPIC_API_KEY"] = ""
                     environment["OPENROUTER_API_KEY"] = authToken
+                } else if (profile.kind == com.jarves.mh.model.ProviderKind.AGENTROUTER) {
+                    environment["ANTHROPIC_API_KEY"] = ""
+                    environment["AGENTROUTER_API_KEY"] = authToken
+                } else if (profile.kind == com.jarves.mh.model.ProviderKind.HUANCHENG) {
+                    environment["ANTHROPIC_API_KEY"] = ""
+                    environment["HUANCHENG_API_KEY"] = authToken
+                } else if (profile.kind == com.jarves.mh.model.ProviderKind.NINE_ROUTER) {
+                    environment["ANTHROPIC_API_KEY"] = ""
+                    environment["NINE_ROUTER_API_KEY"] = authToken
+                } else if (profile.kind == com.jarves.mh.model.ProviderKind.OPENCODE_ZEN) {
+                    environment["ANTHROPIC_API_KEY"] = ""
+                    environment["OPENCODE_API_KEY"] = authToken
                 } else {
                     environment["ANTHROPIC_API_KEY"] = authToken
                 }

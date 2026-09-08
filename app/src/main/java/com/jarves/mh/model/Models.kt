@@ -21,6 +21,10 @@ enum class ProviderKind(
     LLM_ROUTER("OpenRouter", "Use your OpenRouter API key", ProviderProtocol.OPENROUTER, "https://openrouter.ai/api", "~anthropic/claude-sonnet-latest"),
     DEEPSEEK("DeepSeek", "Use your DeepSeek API key", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.deepseek.com/anthropic", "deepseek-v4-flash"),
     KIMI("Kimi", "Anthropic-compatible endpoint", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.moonshot.ai/anthropic", "kimi-k2.6", true),
+    AGENTROUTER("AgentRouter", "Multi-model gateway", ProviderProtocol.OPENAI_CHAT, "https://agentrouter.org/v1", "auto"),
+    HUANCHENG("Huancheng", "Anthropic-compatible", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.hcnsec.cn/v1", "auto"),
+    NINE_ROUTER("9router", "Local model router", ProviderProtocol.OPENAI_CHAT, "http://localhost:20128/v1", "explabs/gpt-5.4-mini"),
+    OPENCODE_ZEN("OpenCode Zen", "OpenCode API", ProviderProtocol.OPENAI_CHAT, "https://opencode.ai/zen/v1", "claude-fable-5"),
     CUSTOM("Custom API", "Anthropic-compatible endpoint", ProviderProtocol.ANTHROPIC_GATEWAY, "", "", true),
 }
 
