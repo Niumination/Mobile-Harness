@@ -67,7 +67,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Run lint (online)
-        run: ./gradlew lintDebug
+        run: ./gradlew lintOnlineDebug
 
   unit-test:
     name: Unit Tests
@@ -106,7 +106,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Run unit tests
-        run: ./gradlew testDebugUnitTest
+        run: ./gradlew testOnlineDebugUnitTest
 
       - name: Upload test results
         if: always()
