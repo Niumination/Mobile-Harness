@@ -142,7 +142,6 @@ android {
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.28.6"
         }
     }
     packaging.resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
