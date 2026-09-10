@@ -1,38 +1,21 @@
 package com.jarves.mh.runtime
 
 import android.content.Context
-import android.util.Log
-import androidx.core.content.ContextCompat
 import com.jarves.mh.model.ChatMessage
 import com.jarves.mh.model.ChangeItem
-import com.jarves.mh.model.DiffLine
-import com.jarves.mh.model.DiffLineType
 import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.ProjectKind
 import com.jarves.mh.model.ProviderProfile
-import com.jarves.mh.model.RiskLevel
 import com.jarves.mh.model.RuntimeEvent
 import com.jarves.mh.model.ToolRequest
 import java.io.File
-import java.io.OutputStreamWriter
-import java.io.BufferedReader
-import java.io.InputStreamReader
-import java.net.HttpURLConnection
-import java.net.URL
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.cancelAndJoin
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import org.json.JSONArray
 
 /**
  * Hermes Runtime Bridge.
@@ -55,9 +38,6 @@ internal class HermesRuntimeBridge(private val context: Context) : RuntimeBridge
     private var activeSessionId: String? = null
     private var process: Process? = null
     private var writer: OutputStreamWriter? = null
-
-    private var _isStreaming = false
-    override val isStreaming: Boolean get() = _isStreaming
 
     companion object {
         private const val TAG = "HermesBridge"
