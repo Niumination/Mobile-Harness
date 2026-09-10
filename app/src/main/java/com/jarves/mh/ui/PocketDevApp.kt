@@ -2101,7 +2101,7 @@ private fun DshApiProtocolPicker(selected: String, onSelected: (String) -> Unit)
     val options = listOf("anthropic-messages", "openai-completions", "openai-responses")
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
-            "Gateway protocol",
+            "Endpoint protocol",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 12.sp,
         )
@@ -2127,7 +2127,7 @@ private fun DshApiProtocolPicker(selected: String, onSelected: (String) -> Unit)
             }
         }
         Text(
-            "Pick the protocol your gateway speaks; DeepSeek Harness routes it directly.",
+            "Pick the protocol your endpoint speaks; the app routes discovery, validation, and the agent accordingly.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 11.sp,
         )
@@ -2580,7 +2580,7 @@ private fun ProviderCredentialsStep(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    if (agentKind == AgentKind.DEEPSEEK_HARNESS && provider == ProviderKind.CUSTOM) {
+                    if (provider == ProviderKind.CUSTOM) {
                         DshApiProtocolPicker(selected = dshApi, onSelected = { onDshApi(it); status = null })
                     }
                     OutlinedTextField(

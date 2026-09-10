@@ -120,6 +120,16 @@ data class ProviderProfile(
 ) {
     /** Effective base URL: fixed kinds always resolve to their constant, ignoring stored drift. */
     val resolvedBaseUrl: String get() = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl
+
+    /**
+     * Effective wire protocol. CUSTOM has no fixed protocol — [dshApi] carries the
+     * user-picked one (shared by the onboarding protocol picker on all agents).
+     */
+    fun effectiveProtocol(): ProviderProtocol = if (kind == ProviderKind.CUSTOM) when (dshApi) {
+        "openai-completions" -> ProviderProtocol.OPENAI_CHAT
+        "openai-responses" -> ProviderProtocol.OPENAI_RESPONSES
+        else -> ProviderProtocol.ANTHROPIC_GATEWAY
+    } else kind.protocol
 }
 
 enum class ProjectKind { PROJECT, QUICK_PROJECT }

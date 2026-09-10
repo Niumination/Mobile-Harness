@@ -175,7 +175,7 @@ internal class HermesRuntimeBridge(
         // For HTTP-based providers: hermes chat --prompt ... --api ...
         
         // Build based on provider protocol
-        when (provider.kind.protocol) {
+        when (provider.effectiveProtocol()) {
             com.jarves.mh.model.ProviderProtocol.OPENAI_CHAT -> {
                 // Hermes with HTTP-based provider
                 cmd.addAll(listOf(
@@ -210,7 +210,7 @@ internal class HermesRuntimeBridge(
         val env = mutableMapOf<String, String>()
         env["DISABLE_AUTOUPDATER"] = "1"
 
-        when (provider.kind.protocol) {
+        when (provider.effectiveProtocol()) {
             com.jarves.mh.model.ProviderProtocol.ANTHROPIC -> {
                 env["ANTHROPIC_BASE_URL"] = provider.baseUrl.trimEnd('/')
                 env["ANTHROPIC_MODEL"] = provider.model
@@ -231,7 +231,7 @@ internal class HermesRuntimeBridge(
 
         // Add API key if present
         secretFor(provider)?.let { token ->
-            when (provider.kind.protocol) {
+            when (provider.effectiveProtocol()) {
                 com.jarves.mh.model.ProviderProtocol.ANTHROPIC -> env["ANTHROPIC_API_KEY"] = token
                 com.jarves.mh.model.ProviderProtocol.OPENAI_CHAT -> env["OPENAI_API_KEY"] = token
                 com.jarves.mh.model.ProviderProtocol.ANTHROPIC_GATEWAY -> env["ANTHROPIC_API_KEY"] = token
