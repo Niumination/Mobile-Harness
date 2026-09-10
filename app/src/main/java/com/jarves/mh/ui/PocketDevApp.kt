@@ -166,10 +166,12 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.jarves.mh.model.ActivityItem
+import com.jarves.mh.model.AgentKind
 import com.jarves.mh.model.ChangeItem
 import com.jarves.mh.model.ChatMessage
 import com.jarves.mh.model.ChatAttachment
 import com.jarves.mh.model.DevStack
+import com.jarves.mh.model.DEEPSEEK_HARNESS_PROVIDERS
 import com.jarves.mh.model.DiffLine
 import com.jarves.mh.model.DiffLineType
 import com.jarves.mh.model.Project
@@ -177,11 +179,13 @@ import com.jarves.mh.model.ProjectKind
 import com.jarves.mh.model.ProjectChat
 import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.ProviderProfile
+import com.jarves.mh.model.providersForAgent
 import com.jarves.mh.model.ToolRequest
 import com.jarves.mh.model.WorkspaceEntry
 import com.jarves.mh.model.projectSlug
 import com.jarves.mh.runtime.RuntimeExecutionService
 import com.jarves.mh.runtime.RuntimeSetupService
+import com.jarves.mh.runtime.AntigravityAuthStatus
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
@@ -192,6 +196,7 @@ import androidx.compose.ui.text.AnnotatedString
 import com.jarves.mh.network.ConnectionValidation
 import com.jarves.mh.network.DiscoveredModel
 import com.jarves.mh.network.ModelDiscoveryResult
+import com.jarves.mh.network.GitHubRepository
 import com.jarves.mh.ui.theme.PocketBlue
 import com.jarves.mh.ui.theme.PocketGreen
 import com.jarves.mh.ui.theme.PocketOrange
@@ -241,9 +246,11 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
             )
         state.startupStage == StartupStage.SETUP_REQUIRED -> RuntimeSetupPromptScreen(
             selectedStacks = state.selectedDevStacks,
+            selectedAgent = state.agentKind,
             themeMode = state.themeMode,
             onToggleTheme = viewModel::toggleTheme,
             onToggleStack = viewModel::toggleDevStack,
+            onSelectAgent = viewModel::selectAgent,
             onDownload = viewModel::startRuntimeSetup,
         )
         state.startupStage == StartupStage.INSTALLING ||
@@ -260,9 +267,18 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
             onToggleTheme = viewModel::toggleTheme,
             onRetry = viewModel::retryStartup,
         )
+        state.startupStage == StartupStage.MODEL_SETUP && state.agentKind == AgentKind.ANTIGRAVITY ->
+            AntigravityOnboardingScreen(
+                state = state,
+                onStartLogin = viewModel::startAntigravityLogin,
+                onSubmitCode = viewModel::submitAntigravityCode,
+                onContinue = viewModel::finishAntigravityOnboarding,
+                onToggleTheme = viewModel::toggleTheme,
+            )
         state.startupStage == StartupStage.MODEL_SETUP -> ProviderSetupScreen(
             initial = state.provider,
             onboarding = true,
+            agentKind = state.agentKind,
             initialStep = 1,
             onSave = viewModel::finishOnboarding,
             onDiscover = viewModel::discoverModels,
@@ -309,6 +325,100 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
             onBuildAndRunAndroid = viewModel::buildAndRunAndroidApp,
         )
         else -> RootScreenHost(state, viewModel, projectsListState)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AntigravityOnboardingScreen(
+    state: AppUiState,
+    onStartLogin: () -> Unit,
+    onSubmitCode: (String) -> Unit,
+    onContinue: () -> Unit,
+    onToggleTheme: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    var code by rememberSaveable { mutableStateOf("") }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Set up Antigravity") },
+                actions = { IconButton(onClick = onToggleTheme) { Icon(Icons.Default.DarkMode, "Toggle theme") } },
+            )
+        },
+    ) { padding ->
+        Column(
+            Modifier.fillMaxSize().padding(padding).padding(24.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            Text("Connect your Google account", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            Text(
+                "PocketDev runs Google's official agy CLI inside its private Linux environment. Google handles authentication and agy owns the saved session.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            when (state.antigravityAuth.status) {
+                AntigravityAuthStatus.SIGNED_OUT, AntigravityAuthStatus.ERROR -> {
+                    state.antigravityAuth.message?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    Button(onClick = onStartLogin, modifier = Modifier.fillMaxWidth().height(52.dp)) {
+                        Text("Sign in with Google")
+                    }
+                }
+                AntigravityAuthStatus.STARTING -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text("Starting the official Antigravity login…")
+                }
+                AntigravityAuthStatus.COMPLETING -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text("Completing Google sign-in…")
+                }
+                AntigravityAuthStatus.AWAITING_CODE -> {
+                    Text("Google sign-in opened in your browser. Copy the one-time code shown after approval.")
+                    state.antigravityAuth.authorizationUrl?.let { url ->
+                        OutlinedButton(
+                            onClick = { clipboard.setText(AnnotatedString(url)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Default.ContentCopy, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Copy sign-in URL")
+                        }
+                    }
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { code = it },
+                        label = { Text("Authorization code") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Button(
+                        onClick = { onSubmitCode(code); code = "" },
+                        enabled = code.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Complete sign-in") }
+                }
+                AntigravityAuthStatus.SIGNED_IN -> {
+                    Surface(color = PocketGreen.copy(alpha = 0.12f), shape = RoundedCornerShape(14.dp)) {
+                        Text(
+                            state.antigravityAuth.accountEmail?.let { "Connected as $it" } ?: "Google account connected",
+                            Modifier.fillMaxWidth().padding(16.dp),
+                            color = PocketGreen,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    Button(onClick = onContinue, modifier = Modifier.fillMaxWidth().height(52.dp)) {
+                        Text("Continue")
+                    }
+                }
+            }
+            Surface(color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f), shape = RoundedCornerShape(14.dp)) {
+                Text(
+                    "Automatic tool approval is enabled for Antigravity. It can edit project files and run commands without confirmation. Changes remain reviewable in PocketDev.",
+                    Modifier.fillMaxWidth().padding(14.dp),
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    fontSize = 12.sp,
+                )
+            }
+        }
     }
 }
 
@@ -627,17 +737,22 @@ private fun getDevStackVisuals(stack: DevStack): DevStackVisuals = when (stack) 
 @Composable
 private fun RuntimeSetupPromptScreen(
     selectedStacks: Set<DevStack>,
+    selectedAgent: AgentKind = AgentKind.CLAUDE_CODE,
     themeMode: AppThemeMode = AppThemeMode.DARK,
     onToggleTheme: () -> Unit = {},
     onToggleStack: (DevStack) -> Unit,
+    onSelectAgent: (AgentKind) -> Unit = {},
     onDownload: () -> Unit,
 ) {
     val context = LocalContext.current
     val activityManager = context.getSystemService(ActivityManager::class.java)
     val memoryInfo = remember { ActivityManager.MemoryInfo().also(activityManager::getMemoryInfo) }
-    val totalRamGb = memoryInfo.totalMem / 1_073_741_824L
+    val totalRamGb = memoryInfo.totalMem.toDouble() / 1_073_741_824.0
+    val totalRamLabel = String.format(java.util.Locale.US, "%.1f", totalRamGb)
     val arm64 = Build.SUPPORTED_64_BIT_ABIS.any { it == "arm64-v8a" }
-    val compatible = arm64 && totalRamGb >= 4
+    // Android reports usable physical memory after hardware/GPU reservations.
+    // RAM is therefore informational; it must not reject nominal 4 GB phones.
+    val compatible = arm64
 
     var currentStep by remember { mutableIntStateOf(0) }
     val setupScrollState = rememberScrollState()
@@ -699,7 +814,7 @@ private fun RuntimeSetupPromptScreen(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    text = "Mobile Harness checks compatibility before downloading the private Linux runtime with real Claude Code, Node.js, and Git.",
+                    text = "Mobile Harness checks compatibility before downloading the private Linux runtime with your coding agent, Node.js, and Git.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 13.5.sp,
                     lineHeight = 19.sp,
@@ -755,8 +870,8 @@ private fun RuntimeSetupPromptScreen(
                         SpecRow(
                             icon = Icons.Default.Memory,
                             label = "Memory (RAM)",
-                            value = "$totalRamGb GB · ${if (totalRamGb >= 8) "Full mode (8GB+)" else "Lite mode"}",
-                            statusOk = totalRamGb >= 4,
+                            value = "$totalRamLabel GB usable · ${if (totalRamGb >= 7.5) "Full mode" else "Lite mode"}",
+                            statusOk = true,
                         )
 
                         SpecRow(
@@ -906,6 +1021,39 @@ private fun RuntimeSetupPromptScreen(
                         Icon(Icons.Default.Check, "Included", tint = PocketGreen, modifier = Modifier.size(20.dp))
                     }
                 }
+
+                Spacer(Modifier.height(18.dp))
+                Text("CODING AGENT", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.9.sp)
+                Spacer(Modifier.height(8.dp))
+
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                ) {
+                    Column {
+                        AgentKind.entries.forEachIndexed { index, agent ->
+                            AgentChoiceRow(
+                                agent = agent,
+                                selected = selectedAgent == agent,
+                                onClick = { onSelectAgent(agent) },
+                            )
+                            if (index != AgentKind.entries.lastIndex) {
+                                HorizontalDivider(
+                                    modifier = Modifier.padding(start = 62.dp),
+                                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+                                )
+                            }
+                        }
+                    }
+                }
+                Text(
+                    "Only the selected optional agent is downloaded. You can install or switch agents later from Settings.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 8.dp, start = 2.dp, end = 2.dp),
+                )
 
                 Spacer(Modifier.height(18.dp))
                 Text("OPTIONAL TOOLCHAINS", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 0.9.sp)
@@ -1098,6 +1246,87 @@ private fun DevStackChoiceRow(
 }
 
 @Composable
+private fun AgentChoiceRow(
+    agent: AgentKind,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val accent = when (agent) {
+        AgentKind.CLAUDE_CODE -> Color(0xFFD97757)
+        AgentKind.DEEPSEEK_HARNESS -> Color(0xFF4D6BFE)
+        AgentKind.ANTIGRAVITY -> Color(0xFF4285F4)
+        AgentKind.HERMES -> Color(0xFF22C55E)
+    }
+    val mark = when (agent) {
+        AgentKind.CLAUDE_CODE -> "CC"
+        AgentKind.DEEPSEEK_HARNESS -> "DS"
+        AgentKind.ANTIGRAVITY -> "AG"
+        AgentKind.HERMES -> "HE"
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.08f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .background(accent.copy(alpha = 0.15f), RoundedCornerShape(10.dp))
+                .border(1.dp, accent.copy(alpha = 0.28f), RoundedCornerShape(10.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(mark, color = accent, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.width(11.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    agent.title,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp,
+                )
+                if (agent == AgentKind.DEEPSEEK_HARNESS) {
+                    Spacer(Modifier.width(7.dp))
+                    Surface(
+                        color = PocketOrange.copy(alpha = 0.14f),
+                        shape = RoundedCornerShape(50),
+                    ) {
+                        Text(
+                            "Recommended",
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                            color = PocketOrange,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(1.dp))
+            Text(agent.subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(1.dp))
+            Text(agent.downloadNote, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Spacer(Modifier.width(10.dp))
+        Box(
+            modifier = Modifier
+                .size(21.dp)
+                .border(
+                    width = if (selected) 2.dp else 1.dp,
+                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                    shape = CircleShape,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (selected) Box(Modifier.size(9.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
+        }
+    }
+}
+
+@Composable
 private fun SpecRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
@@ -1200,59 +1429,63 @@ private fun StartupLoadingScreen(
                 }
                 Spacer(Modifier.height(10.dp))
             }
-            Text(
-                if (installing) "Build your workspace" else "Opening Mobile Harness",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(Modifier.height(4.dp))
-            Box(Modifier.fillMaxWidth().height(42.dp), contentAlignment = Alignment.CenterStart) {
+            if (installing) {
                 Text(
-                    state.startupMessage,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
+                    "Build your workspace",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
                 )
-            }
-            Spacer(Modifier.height(14.dp))
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-            ) {
-                Column(Modifier.padding(horizontal = 16.dp, vertical = 15.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Installation progress", color = MaterialTheme.colorScheme.onSurface, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
-                        Spacer(Modifier.weight(1f))
-                        Text("${(state.startupProgress * 100).toInt()}%", color = MaterialTheme.colorScheme.primary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    LinearProgressIndicator(
-                        progress = { state.startupProgress.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth().height(6.dp),
-                        color = MaterialTheme.colorScheme.primary,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                Spacer(Modifier.height(4.dp))
+                Box(Modifier.fillMaxWidth().height(42.dp), contentAlignment = Alignment.CenterStart) {
+                    Text(
+                        state.startupMessage,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
                     )
-                    Spacer(Modifier.height(10.dp))
-                    Row(Modifier.fillMaxWidth().height(18.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            if (installing) "Estimated ${setupTimeEstimate(state.selectedDevStacks)}" else "Starting local tools",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            fontSize = 11.5.sp,
+                }
+                Spacer(Modifier.height(14.dp))
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                ) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 15.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Installation progress", color = MaterialTheme.colorScheme.onSurface, fontSize = 13.5.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.weight(1f))
+                            Text("${(state.startupProgress * 100).toInt()}%", color = MaterialTheme.colorScheme.primary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(12.dp))
+                        LinearProgressIndicator(
+                            progress = { state.startupProgress.coerceIn(0f, 1f) },
+                            modifier = Modifier.fillMaxWidth().height(6.dp),
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant,
                         )
-                        Spacer(Modifier.weight(1f))
-                        state.startupBytes?.let { (downloaded, total) ->
+                        Spacer(Modifier.height(10.dp))
+                        Row(Modifier.fillMaxWidth().height(18.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                "${formatMegabytes(downloaded)} / ${formatMegabytes(total)}",
+                                "Estimated ${setupTimeEstimate(state.selectedDevStacks)}",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontSize = 11.5.sp,
                             )
+                            Spacer(Modifier.weight(1f))
+                            state.startupBytes?.let { (downloaded, total) ->
+                                Text(
+                                    "${formatMegabytes(downloaded)} / ${formatMegabytes(total)}",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 11.5.sp,
+                                )
+                            }
                         }
                     }
                 }
+            } else {
+                WorkspaceLaunchExperience(state)
             }
             if (installing) {
                 Spacer(Modifier.height(14.dp))
@@ -1270,6 +1503,175 @@ private fun StartupLoadingScreen(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun WorkspaceLaunchExperience(state: AppUiState) {
+    val pulseTransition = rememberInfiniteTransition(label = "workspace launch")
+    val glow by pulseTransition.animateFloat(
+        initialValue = 0.18f,
+        targetValue = 0.48f,
+        animationSpec = infiniteRepeatable(
+            animation = keyframes { durationMillis = 1_400 },
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "workspace glow",
+    )
+    val agentVersion = state.installedAgentVersions[state.agentKind]
+    val agentReady = state.startupMessage.contains("ready", ignoreCase = true) || state.startupProgress >= 0.75f
+
+    Text(
+        "PRIVATE MOBILE WORKSPACE",
+        color = MaterialTheme.colorScheme.primary,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.35.sp,
+    )
+    Spacer(Modifier.height(10.dp))
+    Text(
+        "Getting everything ready",
+        style = MaterialTheme.typography.headlineMedium,
+        fontWeight = FontWeight.Bold,
+    )
+    Spacer(Modifier.height(7.dp))
+    Text(
+        "Restoring your projects and reconnecting your local coding agent.",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontSize = 13.sp,
+        lineHeight = 19.sp,
+    )
+    Spacer(Modifier.height(22.dp))
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.28f)),
+        tonalElevation = 3.dp,
+    ) {
+        Column(Modifier.padding(20.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier
+                        .size(58.dp)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = glow), RoundedCornerShape(18.dp))
+                        .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f), RoundedCornerShape(18.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(27.dp),
+                    )
+                }
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        state.agentKind.title,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        agentVersion?.let { "Verified CLI · v$it" } ?: "Connecting local agent",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.5.sp,
+                    )
+                }
+                Surface(
+                    color = PocketGreen.copy(alpha = 0.12f),
+                    shape = RoundedCornerShape(50),
+                    border = BorderStroke(1.dp, PocketGreen.copy(alpha = 0.3f)),
+                ) {
+                    Text(
+                        if (agentReady) "READY" else "STARTING",
+                        modifier = Modifier.padding(horizontal = 9.dp, vertical = 5.dp),
+                        color = PocketGreen,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.7.sp,
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+            LinearProgressIndicator(
+                modifier = Modifier.fillMaxWidth().height(4.dp),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+            )
+            Spacer(Modifier.height(18.dp))
+            LaunchStatusRow(Icons.Default.Shield, "Private Linux environment", "Verified", complete = true)
+            Spacer(Modifier.height(13.dp))
+            LaunchStatusRow(Icons.Default.Terminal, state.agentKind.title, if (agentReady) "Ready" else "Connecting", complete = agentReady)
+            Spacer(Modifier.height(13.dp))
+            LaunchStatusRow(Icons.Default.Folder, "Project workspace", "Restoring", complete = false)
+        }
+    }
+
+    Spacer(Modifier.height(16.dp))
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(17.dp),
+            strokeWidth = 2.dp,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        Spacer(Modifier.width(11.dp))
+        Text(
+            state.startupMessage,
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 12.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+    Spacer(Modifier.height(12.dp))
+    Text(
+        "Runs locally on this device · Your project files stay private",
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+        fontSize = 10.5.sp,
+        textAlign = TextAlign.Center,
+    )
+}
+
+@Composable
+private fun LaunchStatusRow(icon: ImageVector, label: String, status: String, complete: Boolean) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier
+                .size(28.dp)
+                .background(
+                    if (complete) PocketGreen.copy(alpha = 0.11f) else MaterialTheme.colorScheme.surfaceVariant,
+                    RoundedCornerShape(9.dp),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (complete) Icons.Default.Check else icon,
+                contentDescription = null,
+                tint = if (complete) PocketGreen else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(15.dp),
+            )
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(label, modifier = Modifier.weight(1f), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+        Text(
+            status,
+            color = if (complete) PocketGreen else MaterialTheme.colorScheme.primary,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
     }
 }
 
@@ -1504,6 +1906,13 @@ private fun RootScreenHost(
                     onOpen = viewModel::openProject,
                     onCreate = viewModel::createProject,
                     onCreateQuickProject = viewModel::createQuickProject,
+                    onImportZip = viewModel::importZipProject,
+                    onCloneGit = viewModel::clonePublicGitRepository,
+                    onStartGitHubLogin = viewModel::startGitHubLogin,
+                    onGenerateNewGitHubCode = viewModel::generateNewGitHubCode,
+                    onRefreshGitHub = viewModel::refreshGitHubRepositories,
+                    onDisconnectGitHub = viewModel::disconnectGitHub,
+                    onCloneGitHub = viewModel::cloneGitHubRepository,
                     onRenameProject = viewModel::renameProject,
                     onDeleteProject = viewModel::deleteProject,
                     onSettings = { screen = RootScreen.SETTINGS },
@@ -1534,7 +1943,20 @@ private fun RootScreenHost(
                     onPing = viewModel::pingApi,
                     onClearTerminal = viewModel::clearTerminal,
                     getSavedApiKey = viewModel::getSavedApiKey,
+                    getSavedApiKeys = viewModel::getSavedApiKeys,
+                    onAddApiKey = viewModel::addApiKey,
+                    onActivateApiKey = viewModel::activateApiKey,
+                    onRemoveApiKey = viewModel::removeApiKey,
                     onInstallDevStack = viewModel::installDevStack,
+                    onInstallAgent = viewModel::installAgent,
+                    onCheckAgentUpdates = viewModel::checkAgentUpdates,
+                    onUpdateAgent = viewModel::updateAgent,
+                    onStartAntigravityLogin = viewModel::startAntigravityLogin,
+                    onSubmitAntigravityCode = viewModel::submitAntigravityCode,
+                    onLogoutAntigravity = viewModel::logoutAntigravity,
+                    onRefreshAntigravityModels = viewModel::refreshAntigravityModels,
+                    onSetAntigravityModel = viewModel::setAntigravityModel,
+                    onSetAntigravityEffort = viewModel::setAntigravityEffort,
                     initialDebugUpdateManifestUrl = viewModel.debugUpdateManifestUrl(),
                     onSetDebugUpdateManifestUrl = viewModel::setDebugUpdateManifestUrl,
                     onClearDebugUpdateManifestUrl = viewModel::clearDebugUpdateManifestUrl,
@@ -1549,6 +1971,7 @@ private fun RootScreenHost(
 private fun ProviderSetupScreen(
     initial: ProviderProfile,
     onboarding: Boolean,
+    agentKind: AgentKind = AgentKind.CLAUDE_CODE,
     initialStep: Int = if (onboarding) 0 else 1,
     onBack: (() -> Unit)? = null,
     onSave: (ProviderProfile, String) -> Unit,
@@ -1562,6 +1985,7 @@ private fun ProviderSetupScreen(
     var selected by rememberSaveable { mutableStateOf(initial.kind) }
     var baseUrl by rememberSaveable { mutableStateOf(initial.baseUrl.ifBlank { "https://api.deepseek.com/anthropic" }) }
     var model by rememberSaveable { mutableStateOf(initial.model.ifBlank { "deepseek-chat" }) }
+    var dshApi by rememberSaveable { mutableStateOf(initial.dshApi.ifBlank { "anthropic-messages" }) }
     var apiKey by rememberSaveable { mutableStateOf("") }
 
     val handleBack: (() -> Unit)? = when {
@@ -1608,6 +2032,7 @@ private fun ProviderSetupScreen(
                 0 -> DeviceCheckStep(context, onContinue = { step = 1 })
                 1 -> ProviderChoiceStep(
                     selected = selected,
+                    agentKind = agentKind,
                     onSelected = {
                         if (selected != it) {
                             selected = it
@@ -1624,19 +2049,69 @@ private fun ProviderSetupScreen(
                 )
                 else -> ProviderCredentialsStep(
                     provider = selected,
+                    agentKind = agentKind,
                     baseUrl = baseUrl,
                     model = model,
+                    dshApi = dshApi,
                     apiKey = apiKey,
                     onBaseUrl = { baseUrl = it },
                     onModel = { model = it },
+                    onDshApi = { dshApi = it },
                     onApiKey = { apiKey = it },
                     hasStoredSecret = initial.kind == selected && initial.hasSecret,
-                    onDiscover = { onDiscover(ProviderProfile(selected, baseUrl.trim(), model.trim()), apiKey) },
-                    onValidate = { models -> onValidate(ProviderProfile(selected, baseUrl.trim(), model.trim()), apiKey, models) },
-                    onSave = { onSave(ProviderProfile(selected, baseUrl.trim(), model.trim()), apiKey) },
+                    onDiscover = {
+                        val url = if (selected.fixedBaseUrl) selected.defaultBaseUrl else baseUrl.trim()
+                        onDiscover(ProviderProfile(selected, url, model.trim(), dshApi = dshApi), apiKey)
+                    },
+                    onValidate = { models ->
+                        val url = if (selected.fixedBaseUrl) selected.defaultBaseUrl else baseUrl.trim()
+                        onValidate(ProviderProfile(selected, url, model.trim(), dshApi = dshApi), apiKey, models)
+                    },
+                    onSave = {
+                        val url = if (selected.fixedBaseUrl) selected.defaultBaseUrl else baseUrl.trim()
+                        onSave(ProviderProfile(selected, url, model.trim(), dshApi = dshApi), apiKey)
+                    },
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun DshApiProtocolPicker(selected: String, onSelected: (String) -> Unit) {
+    val options = listOf("anthropic-messages", "openai-completions", "openai-responses")
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            "Gateway protocol",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 12.sp,
+        )
+        options.forEach { option ->
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { onSelected(option) }.padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(19.dp)
+                        .border(
+                            width = if (selected == option) 2.dp else 1.dp,
+                            color = if (selected == option) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
+                            shape = CircleShape,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (selected == option) Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, CircleShape))
+                }
+                Spacer(Modifier.width(10.dp))
+                Text(option, fontSize = 13.sp)
+            }
+        }
+        Text(
+            "Pick the protocol your gateway speaks; DeepSeek Harness routes it directly.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 11.sp,
+        )
     }
 }
 
@@ -1656,14 +2131,15 @@ private fun StepDots(step: Int) {
 private fun DeviceCheckStep(context: Context, onContinue: () -> Unit) {
     val activityManager = context.getSystemService(ActivityManager::class.java)
     val memoryInfo = remember { ActivityManager.MemoryInfo().also(activityManager::getMemoryInfo) }
-    val totalRamGb = memoryInfo.totalMem / 1_073_741_824L
+    val totalRamGb = memoryInfo.totalMem.toDouble() / 1_073_741_824.0
+    val totalRamLabel = String.format(java.util.Locale.US, "%.1f", totalRamGb)
     val arm64 = Build.SUPPORTED_64_BIT_ABIS.any { it == "arm64-v8a" }
-    val compatible = arm64 && totalRamGb >= 4
+    val compatible = arm64
     Column(verticalArrangement = Arrangement.spacedBy(18.dp)) {
         BrandMark()
         Text("Your phone is the workspace", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text("Mobile Harness checks compatibility before downloading the private Linux runtime.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-        CheckRow(Icons.Default.Memory, "Memory", "$totalRamGb GB · ${if (totalRamGb >= 8) "Full mode" else "Lite mode"}", totalRamGb >= 4)
+        CheckRow(Icons.Default.Memory, "Memory", "$totalRamLabel GB usable · ${if (totalRamGb >= 7.5) "Full mode" else "Lite mode"}", true)
         CheckRow(Icons.Default.Code, "Processor", Build.SUPPORTED_ABIS.firstOrNull() ?: "Unknown", arm64)
         CheckRow(Icons.Default.Storage, "Android", "Android ${Build.VERSION.RELEASE}", true)
         Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(16.dp)) {
@@ -1695,7 +2171,13 @@ private fun CheckRow(icon: ImageVector, title: String, value: String, passed: Bo
 }
 
 @Composable
-private fun ProviderChoiceStep(selected: ProviderKind, onSelected: (ProviderKind) -> Unit, onContinue: () -> Unit) {
+private fun ProviderChoiceStep(
+    selected: ProviderKind,
+    agentKind: AgentKind,
+    onSelected: (ProviderKind) -> Unit,
+    onContinue: () -> Unit,
+) {
+    val visibleProviders = remember(agentKind) { providersForAgent(agentKind) }
     Column(Modifier.fillMaxHeight()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -1737,13 +2219,13 @@ private fun ProviderChoiceStep(selected: ProviderKind, onSelected: (ProviderKind
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         ) {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
-                itemsIndexed(ProviderKind.entries) { index, provider ->
+                itemsIndexed(visibleProviders) { index, provider ->
                     ProviderChoiceRow(
                         provider = provider,
                         selected = selected == provider,
                         onClick = { onSelected(provider) },
                     )
-                    if (index != ProviderKind.entries.lastIndex) {
+                    if (index != visibleProviders.lastIndex) {
                         HorizontalDivider(
                             modifier = Modifier.padding(start = 68.dp),
                             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
@@ -1797,6 +2279,7 @@ private fun ProviderChoiceRow(
         ProviderKind.HUANCHENG -> Color(0xFFF59E0B)
         ProviderKind.NINE_ROUTER -> Color(0xFF6366F1)
         ProviderKind.OPENCODE_ZEN -> Color(0xFFEC4899)
+        ProviderKind.HERMES -> Color(0xFF22C55E)
         ProviderKind.CUSTOM -> PocketOrange
     }
     val mark = when (provider) {
@@ -1809,6 +2292,7 @@ private fun ProviderChoiceRow(
         ProviderKind.HUANCHENG -> "H"
         ProviderKind.NINE_ROUTER -> "9"
         ProviderKind.OPENCODE_ZEN -> "OZ"
+        ProviderKind.HERMES -> "HE"
         ProviderKind.CUSTOM -> "<>"
     }
 
@@ -1883,11 +2367,14 @@ private fun ProviderChoiceRow(
 @Composable
 private fun ProviderCredentialsStep(
     provider: ProviderKind,
+    agentKind: AgentKind = AgentKind.CLAUDE_CODE,
     baseUrl: String,
     model: String,
+    dshApi: String = "anthropic-messages",
     apiKey: String,
     onBaseUrl: (String) -> Unit,
     onModel: (String) -> Unit,
+    onDshApi: (String) -> Unit = {},
     onApiKey: (String) -> Unit,
     hasStoredSecret: Boolean,
     onDiscover: suspend () -> ModelDiscoveryResult,
@@ -2039,8 +2526,11 @@ private fun ProviderCredentialsStep(
             Text(provider.title, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(5.dp))
             Text(
-                if (provider.protocol.name.startsWith("OPENAI")) "Mobile Harness will translate Claude Code requests for this provider."
-                else "Claude Code will connect through this API endpoint.",
+                when {
+                    agentKind == AgentKind.DEEPSEEK_HARNESS -> "DeepSeek Harness will connect through this API endpoint."
+                    provider.protocol.name.startsWith("OPENAI") -> "Mobile Harness will translate Claude Code requests for this provider."
+                    else -> "Claude Code will connect through this API endpoint."
+                },
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -2055,9 +2545,17 @@ private fun ProviderCredentialsStep(
                         baseUrl,
                         { onBaseUrl(it); status = null; models = emptyList() },
                         label = { Text("Base URL") },
+                        supportingText = {
+                            if (provider.fixedBaseUrl) Text("Fixed by ${provider.title}")
+                        },
+                        readOnly = provider.fixedBaseUrl,
+                        enabled = !provider.fixedBaseUrl,
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    if (agentKind == AgentKind.DEEPSEEK_HARNESS && provider == ProviderKind.CUSTOM) {
+                        DshApiProtocolPicker(selected = dshApi, onSelected = { onDshApi(it); status = null })
+                    }
                     OutlinedTextField(
                         apiKey,
                         { onApiKey(it); status = null },
@@ -2150,6 +2648,13 @@ private fun ProjectsScreen(
     onOpen: (Project) -> Unit,
     onCreate: (String) -> Unit,
     onCreateQuickProject: () -> Unit,
+    onImportZip: (Uri) -> Unit,
+    onCloneGit: (String) -> Unit,
+    onStartGitHubLogin: () -> Unit,
+    onGenerateNewGitHubCode: () -> Unit,
+    onRefreshGitHub: () -> Unit,
+    onDisconnectGitHub: () -> Unit,
+    onCloneGitHub: (GitHubRepository) -> Unit,
     onRenameProject: (String, String) -> Unit,
     onDeleteProject: (String) -> Unit,
     onSettings: () -> Unit,
@@ -2159,11 +2664,18 @@ private fun ProjectsScreen(
 ) {
     var showCreate by rememberSaveable { mutableStateOf(false) }
     var showUpdateDialog by rememberSaveable { mutableStateOf(false) }
+    var showGitDialog by rememberSaveable { mutableStateOf(false) }
+    var showGitHubDialog by rememberSaveable { mutableStateOf(false) }
+    var gitUrl by rememberSaveable { mutableStateOf("") }
+    var repositorySearch by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable { mutableStateOf("") }
     val projects = state.projects
     val context = LocalContext.current
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         onInstallUpdate()
+    }
+    val importZipLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) onImportZip(uri)
     }
     LaunchedEffect(state.appUpdate?.versionCode) {
         if (state.appUpdate != null) showUpdateDialog = true
@@ -2233,6 +2745,68 @@ private fun ProjectsScreen(
                             maxLines = 1,
                             softWrap = false,
                         )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.28f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)),
+                ) {
+                    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Column {
+                            Text("Bring an existing project", fontSize = 13.5.sp, fontWeight = FontWeight.Bold)
+                            Text("Import files or clone complete Git history", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                            ImportSourceButton(
+                                icon = Icons.Default.Download,
+                                title = if (state.projectImporting) "Importing…" else "ZIP file",
+                                enabled = !state.projectImporting && !state.gitCloneRunning,
+                                modifier = Modifier.weight(1f),
+                                onClick = { importZipLauncher.launch("*/*") },
+                                loading = state.projectImporting,
+                            )
+                            ImportSourceButton(
+                                icon = Icons.Default.Code,
+                                title = if (state.gitCloneRunning) "Cloning…" else "Git URL",
+                                enabled = !state.projectImporting && !state.gitCloneRunning,
+                                modifier = Modifier.weight(1f),
+                                onClick = { showGitDialog = true },
+                                loading = state.gitCloneRunning,
+                            )
+                        }
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().clickable(enabled = !state.gitCloneRunning) {
+                                showGitHubDialog = true
+                                if (state.githubAuthStatus == GitHubAuthStatus.CONNECTED && state.githubRepositories.isEmpty()) onRefreshGitHub()
+                            },
+                            color = MaterialTheme.colorScheme.surface,
+                            shape = RoundedCornerShape(13.dp),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                        ) {
+                            Row(Modifier.padding(horizontal = 12.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Code, null, tint = PocketOrange, modifier = Modifier.size(19.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        state.githubLogin?.let { "GitHub · @$it" } ?: "Connect GitHub",
+                                        fontSize = 12.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                    Text(
+                                        if (state.githubLogin != null) "Browse public and private repositories" else "Sign in to access your repositories",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        (state.projectImportMessage ?: state.gitCloneMessage)?.let { message ->
+                            Text(message, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.primary)
+                        }
                     }
                 }
             }
@@ -2337,6 +2911,136 @@ private fun ProjectsScreen(
         confirmButton = { TextButton(onClick = { onCreate(name); showCreate = false; name = "" }, enabled = name.isNotBlank()) { Text("Create") } },
         dismissButton = { TextButton(onClick = { showCreate = false }) { Text("Cancel") } },
     )
+    if (showGitDialog) AlertDialog(
+        onDismissRequest = { if (!state.gitCloneRunning) showGitDialog = false },
+        icon = { Icon(Icons.Default.Code, null, tint = PocketOrange) },
+        title = { Text("Clone Git repository") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Paste a public HTTPS repository URL. Its complete Git history and current branch will be kept.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.5.sp)
+                OutlinedTextField(
+                    value = gitUrl,
+                    onValueChange = { gitUrl = it },
+                    label = { Text("HTTPS Git URL") },
+                    placeholder = { Text("https://github.com/owner/repository.git") },
+                    singleLine = true,
+                )
+                state.gitCloneMessage?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = gitUrl.isNotBlank() && !state.gitCloneRunning,
+                onClick = { onCloneGit(gitUrl); showGitDialog = false; gitUrl = "" },
+            ) { Text(if (state.gitCloneRunning) "Cloning…" else "Clone project") }
+        },
+        dismissButton = { TextButton(onClick = { showGitDialog = false }, enabled = !state.gitCloneRunning) { Text("Cancel") } },
+    )
+    if (showGitHubDialog) {
+        val clipboard = LocalClipboardManager.current
+        val filteredRepositories = state.githubRepositories.filter { repository ->
+            repositorySearch.isBlank() || repository.fullName.contains(repositorySearch, ignoreCase = true)
+        }
+        AlertDialog(
+            onDismissRequest = { if (!state.gitCloneRunning) showGitHubDialog = false },
+            icon = { Icon(Icons.Default.Code, null, tint = PocketOrange) },
+            title = { Text(state.githubLogin?.let { "GitHub · @$it" } ?: "Connect GitHub") },
+            text = {
+                when (state.githubAuthStatus) {
+                    GitHubAuthStatus.DISCONNECTED, GitHubAuthStatus.ERROR -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            state.githubMessage ?: "Sign in with GitHub's official CLI to browse public and private repositories.",
+                            color = if (state.githubAuthStatus == GitHubAuthStatus.ERROR) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 13.sp,
+                        )
+                        Button(onClick = onStartGitHubLogin, modifier = Modifier.fillMaxWidth()) { Text("Sign in with GitHub") }
+                    }
+                    GitHubAuthStatus.STARTING -> Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                        CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.5.dp)
+                        Spacer(Modifier.height(12.dp))
+                        Text(state.githubMessage ?: "Starting GitHub sign-in…")
+                    }
+                    GitHubAuthStatus.AWAITING_USER -> Column(verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("Enter this one-time code in the GitHub page opened in your browser.", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().clickable { state.githubUserCode?.let { clipboard.setText(AnnotatedString(it)) } },
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                        ) {
+                            Text(
+                                state.githubUserCode.orEmpty(),
+                                modifier = Modifier.padding(16.dp),
+                                textAlign = TextAlign.Center,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 22.sp,
+                                letterSpacing = 2.sp,
+                            )
+                        }
+                        Text("Tap the code to copy it. PocketDev will connect automatically after approval.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        OutlinedButton(
+                            onClick = onGenerateNewGitHubCode,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text("Generate new code")
+                        }
+                    }
+                    GitHubAuthStatus.CONNECTED -> Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(state.githubMessage ?: "Select a repository", modifier = Modifier.weight(1f), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            IconButton(onClick = onRefreshGitHub, enabled = !state.githubRepositoriesLoading) {
+                                Icon(Icons.Default.Refresh, "Refresh repositories")
+                            }
+                        }
+                        OutlinedTextField(
+                            value = repositorySearch,
+                            onValueChange = { repositorySearch = it },
+                            placeholder = { Text("Search repositories") },
+                            leadingIcon = { Icon(Icons.Default.Search, null) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        if (state.githubRepositoriesLoading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        LazyColumn(Modifier.fillMaxWidth().heightIn(max = 350.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            items(filteredRepositories, key = { it.fullName }) { repository ->
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth().clickable(enabled = !state.gitCloneRunning) {
+                                        showGitHubDialog = false
+                                        onCloneGitHub(repository)
+                                    },
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                                ) {
+                                    Row(Modifier.padding(11.dp), verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(if (repository.private) Icons.Default.Key else Icons.Default.Code, null, modifier = Modifier.size(17.dp), tint = PocketOrange)
+                                        Spacer(Modifier.width(9.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(repository.fullName, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text("${if (repository.private) "Private" else "Public"} · ${repository.defaultBranch}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                if (state.githubAuthStatus == GitHubAuthStatus.CONNECTED) {
+                    TextButton(onClick = { showGitHubDialog = false }) { Text("Close") }
+                }
+            },
+            dismissButton = {
+                if (state.githubAuthStatus == GitHubAuthStatus.CONNECTED) {
+                    TextButton(onClick = { onDisconnectGitHub(); showGitHubDialog = false }) { Text("Disconnect") }
+                } else if (state.githubAuthStatus != GitHubAuthStatus.STARTING) {
+                    TextButton(onClick = { showGitHubDialog = false }) { Text("Cancel") }
+                }
+            },
+        )
+    }
     val update = state.appUpdate
     if (showUpdateDialog && update != null) {
         val canInstall = Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()
@@ -2397,6 +3101,29 @@ private fun ProjectsScreen(
 }
 
 @Composable
+private fun ImportSourceButton(
+    icon: ImageVector,
+    title: String,
+    enabled: Boolean,
+    loading: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(46.dp),
+        shape = RoundedCornerShape(12.dp),
+        contentPadding = PaddingValues(horizontal = 10.dp),
+    ) {
+        if (loading) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+        else Icon(icon, null, Modifier.size(17.dp))
+        Spacer(Modifier.width(7.dp))
+        Text(title, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1)
+    }
+}
+
+@Composable
 private fun ApiStatusChip(state: AppUiState, onSettings: () -> Unit, onPing: () -> Unit) {
     val dotColor = when (state.apiPingStatus) {
         ApiPingStatus.OK -> PocketGreen
@@ -2405,6 +3132,8 @@ private fun ApiStatusChip(state: AppUiState, onSettings: () -> Unit, onPing: () 
         ApiPingStatus.IDLE -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
     }
     val providerLabel = when {
+        state.agentKind == AgentKind.ANTIGRAVITY ->
+            state.antigravityModel.ifBlank { state.agentKind.title }
         state.provider.model.isNotBlank() -> state.provider.model
         state.provider.baseUrl.isNotBlank() -> {
             runCatching { java.net.URI(state.provider.baseUrl).host ?: state.provider.kind.title }
@@ -2696,7 +3425,7 @@ private fun WorkspaceScreen(
                             ),
                         )
                         Text(
-                            "${activeChat?.title ?: "Chat"} · ${state.provider.kind.title}",
+                            "${activeChat?.title ?: "Chat"} · ${if (state.agentKind == AgentKind.ANTIGRAVITY) state.agentKind.title else state.provider.kind.title}",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -2768,6 +3497,7 @@ private fun WorkspaceScreen(
                     taskStartedAtMillis = state.workSegmentStartedAtMillis ?: state.taskStartedAtMillis,
                     taskFinishedAtMillis = state.taskFinishedAtMillis,
                     thinkingActive = state.liveThinking,
+                    agentKind = state.agentKind,
                     pendingAttachments = state.pendingAttachments,
                     onAttach = {
                         attachmentLauncher.launch(arrayOf("image/*", "text/*", "application/json", "application/xml"))
@@ -3069,7 +3799,7 @@ private fun FilesTab(
             }
         }
         if (!loading && files.isEmpty()) {
-            item { EmptyState(Icons.Default.Folder, "No files yet", "Ask Claude Code to create something in this project.") }
+            item { EmptyState(Icons.Default.Folder, "No files yet", "Ask your coding agent to create something in this project.") }
         }
         items(visibleFiles, key = { it.path }) { entry ->
             Row(
@@ -3142,6 +3872,7 @@ private fun ChatTab(
     taskStartedAtMillis: Long?,
     taskFinishedAtMillis: Long?,
     thinkingActive: Boolean,
+    agentKind: AgentKind,
     pendingAttachments: List<ChatAttachment>,
     onAttach: () -> Unit,
     onRemoveAttachment: (String) -> Unit,
@@ -3149,7 +3880,7 @@ private fun ChatTab(
     onRunInTerminal: (String) -> Unit,
 ) {
     val view = LocalView.current
-    // Keep the screen on while Claude is working in this chat. Released automatically
+    // Keep the screen on while the selected agent is working in this chat. Released automatically
     // when the task finishes or the user leaves the chat tab.
     DisposableEffect(isRunning) {
         view.keepScreenOn = isRunning
@@ -3172,7 +3903,7 @@ private fun ChatTab(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 items(messages, key = { it.id }) { message ->
-                    if (message.workItems.isNotEmpty() || message.workedMillis > 0L) {
+                    if (message.workItems.isNotEmpty()) {
                         WorkBlockCard(message)
                     } else {
                         MessageBubble(message, onRunInTerminal, onOpenAttachment)
@@ -3303,7 +4034,7 @@ private fun ChatTab(
                                 Box(contentAlignment = Alignment.CenterStart) {
                                     if (prompt.isEmpty()) {
                                         Text(
-                                            text = "Message Claude…",
+                                            text = "Message ${agentKind.title}…",
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             fontSize = 15.sp,
                                         )
@@ -3386,10 +4117,20 @@ private fun LiveClaudeProcess(
 @Composable
 private fun WorkBlockCard(message: ChatMessage) {
     val seconds = (message.workedMillis / 1_000L).coerceAtLeast(1L)
-    ClaudeActivityDisclosure(
-        items = message.workItems,
-        headline = activityHeadline(message.workItems, seconds, message.workItems.isEmpty()),
-    )
+    Column {
+        ClaudeActivityDisclosure(
+            items = message.workItems,
+            headline = activityHeadline(message.workItems, seconds, message.workItems.isEmpty()),
+        )
+        if (message.workItems.lastOrNull()?.title?.startsWith("Task stopped") == true) {
+            Text(
+                text = "Worked for ${formatDuration(seconds)}",
+                modifier = Modifier.padding(start = 29.dp, bottom = 6.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+            )
+        }
+    }
 }
 
 @Composable
@@ -3592,16 +4333,23 @@ private fun ActivitySummaryRow(
     }
 }
 
-private fun activityIcon(item: ActivityItem?): ImageVector = when {
-    item == null -> Icons.Default.AutoAwesome
-    item.isCommand || item.title.equals("Bash", ignoreCase = true) -> Icons.Default.Terminal
-    item.title.equals("Write", ignoreCase = true) ||
-        item.title.equals("Edit", ignoreCase = true) ||
-        item.title.equals("NotebookEdit", ignoreCase = true) -> Icons.Default.Edit
-    item.title.equals("Read", ignoreCase = true) -> Icons.Default.Description
-    item.title.equals("Glob", ignoreCase = true) ||
-        item.title.equals("Grep", ignoreCase = true) -> Icons.Default.Search
-    else -> Icons.Default.AutoAwesome
+private fun activityIcon(item: ActivityItem?): ImageVector {
+    if (item == null) return Icons.Default.AutoAwesome
+    val task = item.title
+        .removePrefix("Running ")
+        .removeSuffix(" completed")
+        .trim()
+    return when {
+        item.isCommand || task.equals("Bash", ignoreCase = true) -> Icons.Default.Terminal
+        task.equals("Write", ignoreCase = true) ||
+            task.equals("Edit", ignoreCase = true) ||
+            task.equals("NotebookEdit", ignoreCase = true) -> Icons.Default.Edit
+        task.equals("Read", ignoreCase = true) -> Icons.Default.Description
+        task.equals("Glob", ignoreCase = true) ||
+            task.equals("Grep", ignoreCase = true) -> Icons.Default.Search
+        task.contains("file", ignoreCase = true) -> Icons.Default.Description
+        else -> Icons.Default.AutoAwesome
+    }
 }
 
 @Composable
@@ -3642,7 +4390,7 @@ private fun activityHeadline(items: List<ActivityItem>, seconds: Long, thinking:
     if (latest == null) return "Think · Analyzing the request · ${formatDuration(seconds)}"
     if (thinking && latest.title == "Think") return "Think · ${latest.detail} · ${formatDuration(seconds)}"
     val detail = latest.detail.replace(Regex("\\s+"), " ").trim().ifBlank { latest.title }
-    return "${activityName(latest)} · ${detail.take(100)}"
+    return "${activityName(latest)} · ${detail.take(100)} · ${formatDuration(seconds)}"
 }
 
 private fun activityName(item: ActivityItem): String = item.title
@@ -3710,6 +4458,14 @@ private fun MessageBubble(message: ChatMessage, onRunInTerminal: (String) -> Uni
                             onRunCode = onRunInTerminal,
                         )
                     }
+                }
+                if (!message.fromUser && message.workedMillis > 0L) {
+                    Text(
+                        text = "Worked for ${formatDuration((message.workedMillis / 1_000L).coerceAtLeast(1L))}",
+                        modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 10.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                    )
                 }
                 if (message.attachments.isNotEmpty()) {
                     Column(
@@ -3792,7 +4548,7 @@ private fun FilesTab(files: List<WorkspaceEntry>, loading: Boolean, onRefresh: (
             Spacer(Modifier.height(8.dp))
         }
         if (!loading && files.isEmpty()) {
-            item { EmptyState(Icons.Default.Folder, "No files yet", "Ask Claude Code to create something in this project.") }
+            item { EmptyState(Icons.Default.Folder, "No files yet", "Ask your coding agent to create something in this project.") }
         }
         items(files, key = { it.path }) { entry ->
             Row(

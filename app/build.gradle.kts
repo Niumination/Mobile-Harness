@@ -32,11 +32,17 @@ val appUpdateManifestUrl =
 val runtimeBundleDir = rootProject.layout.projectDirectory.dir("dist/runtime-bundles")
 val generatedRuntimeAssets = layout.buildDirectory.dir("generated/runtime-assets")
 
+val prepareBundledAgentAssets = tasks.register<Sync>("prepareBundledAgentAssets") {
+    from(runtimeBundleDir.file("pocketdev-agy-arm64-2026.09.1.tar.zst"))
+    into(generatedRuntimeAssets.map { it.dir("shared/runtime") })
+}
+
 val prepareOfflineRuntimeAssets = tasks.register<Sync>("prepareOfflineRuntimeAssets") {
     from(
         runtimeBundleDir.file("pocketdev-core-arm64-2026.09.4.tar.zst"),
         runtimeBundleDir.file("pocketdev-python-arm64-2026.09.2.tar.zst"),
         runtimeBundleDir.file("pocketdev-android-arm64-2026.09.1.tar.zst"),
+        runtimeBundleDir.file("pocketdev-dsh-arm64-2026.09.1.tar.zst"),
     )
     into(generatedRuntimeAssets.map { it.dir("offline/runtime") })
 }
@@ -109,6 +115,7 @@ android {
     }
 
     sourceSets.getByName("offline").assets.srcDir(generatedRuntimeAssets.map { it.dir("offline") })
+    sourceSets.getByName("main").assets.srcDir(generatedRuntimeAssets.map { it.dir("shared") })
 
     buildTypes {
         debug {
@@ -151,6 +158,9 @@ android {
 
 tasks.matching { it.name.startsWith("mergeOffline") && it.name.endsWith("Assets") }
     .configureEach { dependsOn(prepareOfflineRuntimeAssets) }
+
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }
+    .configureEach { dependsOn(prepareBundledAgentAssets) }
 
 tasks.matching { it.name.contains("Offline") && it.name.contains("lint", ignoreCase = true) }
     .configureEach { dependsOn(prepareOfflineRuntimeAssets) }

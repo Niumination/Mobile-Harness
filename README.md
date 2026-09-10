@@ -92,7 +92,7 @@ Mobile Harness unites modern **Jetpack Compose UI** with a self-contained **Ubun
   <tr>
     <td width="50%" valign="top">
       <h3>Autonomous Agent Coding</h3>
-      <p>Native integration with Claude Code CLI. Stream step-by-step reasoning, automated file manipulation, and terminal commands across persistent project sessions.</p>
+      <p>Native integrations with Claude Code, DeepSeek Harness, Antigravity CLI, and Hermes Agent. Each agent has an isolated driver, settings, and resumable project conversations.</p>
     </td>
     <td width="50%" valign="top">
       <h3>Isolated Linux Subsystem</h3>
@@ -221,7 +221,21 @@ Mobile Harness uses Claude Code's Anthropic-compatible API protocol. You can con
 | **Custom API** | Endpoint Override | Compatible | Compatible | `Experimental` | User-configured gateway |
 
 > [!NOTE]
-> All credentials are stored with hardware-backed Android Keystore AES-256-GCM encryption. Keys are decrypted solely in-memory during active bridge operations.
+> API keys are stored with hardware-backed Android Keystore AES-256-GCM encryption. Antigravity Google OAuth credentials are created and retained only by the official `agy` CLI in its persistent Linux home; Mobile Harness never reads or copies its tokens.
+
+### Coding agents
+
+| Agent | Authentication | Installation | Isolation |
+| :--- | :--- | :--- | :--- |
+| **Claude Code** | Claude account or API-key providers | Included in Core | Existing Claude bridge and settings |
+| **DeepSeek Harness** | API-key providers | On demand | Existing DSH bridge and settings |
+| **Antigravity CLI** | Official Google OAuth flow | Version-pinned online download | Dedicated `agy` bridge, model, effort, and conversation IDs |
+| **Hermes Agent** | API-key providers | On demand | `hermes` pip install, `hermes chat` command |
+
+For Antigravity, select **Antigravity CLI**, install it, and tap **Sign in with Google**. Mobile Harness starts the official CLI login, opens the freshly generated Google URL in the system browser, and sends the returned one-time code back to that waiting process. The app does not embed Google login in a WebView and does not construct its own OAuth request.
+
+> [!WARNING]
+> Antigravity tasks currently launch with `--dangerously-skip-permissions`. This gives the official agent permission to run tools without individual PocketDev approval prompts. Use it only with projects and prompts you trust. Account quotas and service limits still apply; signing in does not provide unlimited usage.
 
 When Android is selected during onboarding, Mobile Harness installs that complete toolchain into its private Ubuntu environment. Android projects can then be built with the workspace play button. The resulting debug APK is passed directly to Android's system package installer and launched after installation; USB debugging, wireless debugging, an ADB port, and a pairing code are not required. Android still requires the user to allow installs from Mobile Harness and confirm each installation.
 
@@ -242,14 +256,14 @@ flowchart TB
 
     subgraph Subsystem[" Private Linux Subsystem (PRoot ARM64) "]
         Ubuntu["Ubuntu 20.04 LTS Subsystem<br/>Rootless Userspace Environment"]
-        Agent["Claude Code CLI<br/>Autonomous Agent Harness"]
+        Agent["Agent Registry<br/>Claude • DeepSeek • Antigravity • Hermes"]
         Tools["Development Toolchains<br/>Node.js • Git • Python • C++"]
         Workspace["Local Project Workspace<br/>Files • Git History • Checkpoints"]
     end
 
     subgraph Cloud[" Model Providers "]
-        Anthropic["Anthropic Claude API"]
-        Gateways["LLMrouter / Pocket Gateways"]
+        Anthropic["Anthropic / API Gateways"]
+        Gateways["Google Antigravity Service"]
     end
 
     UI <--> Service
@@ -272,7 +286,7 @@ flowchart TB
 
 ### Core Runtime Components
 * **Base Environment**: Ubuntu 20.04 ARM64 verified rootfs
-* **Agent Engine**: Official Claude Code CLI package distributed directly from Anthropic
+* **Agent Engine**: Registry-selected, isolated drivers for Claude Code, DeepSeek Harness, the official Antigravity CLI, and Hermes Agent
 * **Native Tooling**: Node.js LTS, npm, Git, OpenSSL, curl, and GNU coreutils
 * **Process Virtualization**: PRoot user-space architecture emulation with zero kernel modifications
 

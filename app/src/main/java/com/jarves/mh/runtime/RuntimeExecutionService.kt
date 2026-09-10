@@ -22,6 +22,8 @@ internal object RuntimeTaskController {
 class RuntimeExecutionService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var projectName: String = "your project"
+    private var notificationTitle: String = "Mobile Harness is working"
+    private var canStop: Boolean = true
     private var taskRunning: Boolean = false
 
     override fun onCreate() {
@@ -31,6 +33,8 @@ class RuntimeExecutionService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         intent?.getStringExtra(EXTRA_PROJECT_NAME)?.takeIf(String::isNotBlank)?.let { projectName = it }
+        intent?.getStringExtra(EXTRA_TITLE)?.takeIf(String::isNotBlank)?.let { notificationTitle = it }
+        if (intent?.hasExtra(EXTRA_CAN_STOP) == true) canStop = intent.getBooleanExtra(EXTRA_CAN_STOP, true)
         when (intent?.action ?: ACTION_START) {
             ACTION_STOP -> {
                 RuntimeTaskController.requestStop()
@@ -46,7 +50,7 @@ class RuntimeExecutionService : Service() {
                     ?: "Claude Code is working in $projectName"
                 getSystemService(NotificationManager::class.java).notify(
                     RUNNING_NOTIFICATION_ID,
-                    runningNotification(detail, includeStop = true),
+                    runningNotification(detail, includeStop = canStop),
                 )
             }
             ACTION_COMPLETE -> finishTask(
@@ -69,7 +73,7 @@ class RuntimeExecutionService : Service() {
                 taskRunning = true
                 startForeground(
                     RUNNING_NOTIFICATION_ID,
-                    runningNotification("Claude Code is working in $projectName", includeStop = true),
+                    runningNotification("Claude Code is working in $projectName", includeStop = canStop),
                 )
                 acquireWakeLock()
             }
@@ -80,7 +84,7 @@ class RuntimeExecutionService : Service() {
     private fun runningNotification(detail: String, includeStop: Boolean): android.app.Notification {
         val builder = NotificationCompat.Builder(this, RUNNING_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
-            .setContentTitle("Mobile Harness is working")
+            .setContentTitle(notificationTitle)
             .setContentText(detail)
             .setContentIntent(openAppIntent())
             .setCategory(NotificationCompat.CATEGORY_PROGRESS)
@@ -154,6 +158,8 @@ class RuntimeExecutionService : Service() {
         const val ACTION_CANCELLED = "com.jarves.mh.CANCEL_RUNTIME"
         const val EXTRA_PROJECT_NAME = "project_name"
         const val EXTRA_DETAIL = "detail"
+        const val EXTRA_TITLE = "title"
+        const val EXTRA_CAN_STOP = "can_stop"
 
         private const val RUNNING_CHANNEL_ID = "runtime"
         private const val RESULT_CHANNEL_ID = "task-results"

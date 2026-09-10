@@ -15,17 +15,90 @@ enum class ProviderKind(
     val defaultBaseUrl: String,
     val defaultModel: String,
     val experimental: Boolean = false,
+    val fixedBaseUrl: Boolean = false,
+    val fixedProtocol: Boolean = false,
 ) {
     CLAUDE("Claude subscription", "Pro, Max, Team or Enterprise", ProviderProtocol.CLAUDE_LOGIN, "", "default"),
     ANTHROPIC("Anthropic API", "Usage billed through Console", ProviderProtocol.ANTHROPIC, "https://api.anthropic.com", "claude-sonnet-4-6"),
     LLM_ROUTER("OpenRouter", "Use your OpenRouter API key", ProviderProtocol.OPENROUTER, "https://openrouter.ai/api", "~anthropic/claude-sonnet-latest"),
     DEEPSEEK("DeepSeek", "Use your DeepSeek API key", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.deepseek.com/anthropic", "deepseek-v4-flash"),
     KIMI("Kimi", "Anthropic-compatible endpoint", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.moonshot.ai/anthropic", "kimi-k2.6", true),
+    OPENCODE_ZEN(
+        "OpenCode Zen · DeepSeek",
+        "DeepSeek via OpenCode Zen gateway",
+        ProviderProtocol.OPENAI_RESPONSES,
+        "https://opencode.ai/zen/v1",
+        "deepseek-v4-flash",
+        fixedBaseUrl = true,
+        fixedProtocol = true,
+    ),
     AGENTROUTER("AgentRouter", "Multi-model gateway", ProviderProtocol.OPENAI_CHAT, "https://agentrouter.org/v1", "auto"),
     HUANCHENG("Huancheng", "Anthropic-compatible", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.hcnsec.cn/v1", "auto"),
     NINE_ROUTER("9router", "Local model router", ProviderProtocol.OPENAI_CHAT, "http://localhost:20128/v1", "explabs/gpt-5.4-mini"),
-    OPENCODE_ZEN("OpenCode Zen", "OpenCode API", ProviderProtocol.OPENAI_CHAT, "https://opencode.ai/zen/v1", "claude-fable-5"),
+    HERMES("Hermes", "Hermes Agent", ProviderProtocol.OPENAI_CHAT, "http://localhost:20128/v1", "hermes"),
     CUSTOM("Custom API", "Anthropic-compatible endpoint", ProviderProtocol.ANTHROPIC_GATEWAY, "", "", true),
+}
+
+/**
+ * Coding agent engine installed in the private Linux runtime.
+ * CLAUDE_CODE is the pre-existing default; DEEPSEEK_HARNESS is the
+ * official DeepSeek Harness (`dsh`) installed on demand.
+ */
+enum class AgentKind(
+    val stableId: String,
+    val title: String,
+    val subtitle: String,
+    val downloadNote: String,
+) {
+    CLAUDE_CODE(
+        "claude-code",
+        "Claude Code",
+        "Anthropic's coding agent · broad provider support",
+        "Included in the Core runtime",
+    ),
+    DEEPSEEK_HARNESS(
+        "deepseek-harness",
+        "DeepSeek Harness",
+        "Official DeepSeek coding agent · API-key providers",
+        "Additional ~28 MB runtime bundle",
+    ),
+    ANTIGRAVITY(
+        "antigravity",
+        "Antigravity CLI",
+        "Google's official coding agent · Google account",
+        "39.9 MB",
+    ),
+    HERMES(
+        "hermes",
+        "Hermes Agent",
+        "Nous Research's personal AI agent · skills + memory",
+        "Additional runtime via pip",
+    ),
+    ;
+
+    companion object {
+        fun fromStored(value: String?): AgentKind = entries.firstOrNull {
+            it.stableId == value || it.name == value
+        } ?: CLAUDE_CODE
+    }
+}
+
+/** Provider kinds usable with [AgentKind.DEEPSEEK_HARNESS]. Claude OAuth login has no dsh equivalent. */
+val DEEPSEEK_HARNESS_PROVIDERS: Set<ProviderKind> = setOf(
+    ProviderKind.DEEPSEEK,
+    ProviderKind.ANTHROPIC,
+    ProviderKind.LLM_ROUTER,
+    ProviderKind.KIMI,
+    ProviderKind.OPENCODE_ZEN,
+    ProviderKind.CUSTOM,
+)
+
+/** Provider choices shown for the selected coding agent. */
+fun providersForAgent(agent: AgentKind): List<ProviderKind> = when (agent) {
+    AgentKind.DEEPSEEK_HARNESS -> ProviderKind.entries.filter { it in DEEPSEEK_HARNESS_PROVIDERS }
+    AgentKind.CLAUDE_CODE -> ProviderKind.entries.filterNot { it == ProviderKind.OPENCODE_ZEN }
+    AgentKind.ANTIGRAVITY -> emptyList()
+    AgentKind.HERMES -> ProviderKind.entries.filter { it in HERMES_PROVIDERS }
 }
 
 data class ProviderProfile(
@@ -33,7 +106,12 @@ data class ProviderProfile(
     val baseUrl: String = kind.defaultBaseUrl,
     val model: String = kind.defaultModel,
     val hasSecret: Boolean = false,
-)
+    /** dsh custom-route wire protocol for CUSTOM: anthropic-messages | openai-completions | openai-responses. */
+    val dshApi: String = "anthropic-messages",
+) {
+    /** Effective base URL: fixed kinds always resolve to their constant, ignoring stored drift. */
+    val resolvedBaseUrl: String get() = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl
+}
 
 enum class ProjectKind { PROJECT, QUICK_PROJECT }
 

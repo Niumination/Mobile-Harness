@@ -133,10 +133,12 @@ class ProviderApiClient {
         }
     }
 
-    private fun validationBody(model: String, protocol: ProviderProtocol): String = when (protocol) {
+    internal fun validationBody(model: String, protocol: ProviderProtocol): String = when (protocol) {
         ProviderProtocol.OPENAI_RESPONSES -> JSONObject()
             .put("model", model)
-            .put("max_output_tokens", 1)
+            // OpenCode Zen and some Responses-compatible providers reject values below 16.
+            // Keep the probe small while remaining valid for those providers.
+            .put("max_output_tokens", 16)
             .put("input", "Reply OK")
             .toString()
         ProviderProtocol.OPENAI_CHAT -> JSONObject()

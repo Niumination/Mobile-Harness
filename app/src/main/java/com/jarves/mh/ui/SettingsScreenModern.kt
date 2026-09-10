@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PrivacyTip
+import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -76,6 +77,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -84,17 +88,22 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.jarves.mh.BuildConfig
+import com.jarves.mh.data.ApiKeyInfo
+import com.jarves.mh.model.AgentKind
+import com.jarves.mh.model.DEEPSEEK_HARNESS_PROVIDERS
 import com.jarves.mh.model.DevStack
 import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.ProviderProfile
+import com.jarves.mh.model.providersForAgent
 import com.jarves.mh.network.ConnectionValidation
 import com.jarves.mh.network.DiscoveredModel
 import com.jarves.mh.network.ModelDiscoveryResult
+import com.jarves.mh.runtime.AntigravityAuthStatus
 import com.jarves.mh.ui.theme.AppThemeMode
 import com.jarves.mh.ui.theme.PocketOrange
 import kotlinx.coroutines.launch
 
-private enum class SettingsSection { CONNECTION, APPEARANCE, TOOLS, RUNTIME, UPDATE_CHANNEL }
+private enum class SettingsSection { AGENT, CONNECTION, APPEARANCE, TOOLS, RUNTIME, UPDATE_CHANNEL }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -107,7 +116,20 @@ fun SettingsScreen(
     onPing: () -> Unit,
     onClearTerminal: () -> Unit,
     getSavedApiKey: (ProviderKind) -> String,
+    getSavedApiKeys: (ProviderKind) -> List<ApiKeyInfo>,
+    onAddApiKey: (ProviderKind, String, String) -> List<ApiKeyInfo>,
+    onActivateApiKey: (ProviderKind, String) -> List<ApiKeyInfo>,
+    onRemoveApiKey: (ProviderKind, String) -> List<ApiKeyInfo>,
     onInstallDevStack: (DevStack) -> Unit = {},
+    onInstallAgent: (AgentKind) -> Unit = {},
+    onCheckAgentUpdates: () -> Unit = {},
+    onUpdateAgent: (AgentKind) -> Unit = {},
+    onStartAntigravityLogin: () -> Unit = {},
+    onSubmitAntigravityCode: (String) -> Unit = {},
+    onLogoutAntigravity: () -> Unit = {},
+    onRefreshAntigravityModels: () -> Unit = {},
+    onSetAntigravityModel: (String) -> Unit = {},
+    onSetAntigravityEffort: (String) -> Unit = {},
     initialDebugUpdateManifestUrl: String = "",
     onSetDebugUpdateManifestUrl: (String) -> Unit = {},
     onClearDebugUpdateManifestUrl: () -> Unit = {},
@@ -118,8 +140,14 @@ fun SettingsScreen(
     var selectedKind by rememberSaveable(state.provider.kind) { mutableStateOf(state.provider.kind) }
     var baseUrl by rememberSaveable(state.provider.baseUrl) { mutableStateOf(state.provider.baseUrl) }
     var model by rememberSaveable(state.provider.model) { mutableStateOf(state.provider.model) }
+    var dshApi by rememberSaveable(state.provider.dshApi) { mutableStateOf(state.provider.dshApi) }
     var apiKey by rememberSaveable(state.provider.kind) { mutableStateOf(getSavedApiKey(state.provider.kind)) }
-    var keyVisible by rememberSaveable { mutableStateOf(false) }
+    var savedKeys by remember(state.provider.kind, state.activeApiKeyName) {
+        mutableStateOf(getSavedApiKeys(state.provider.kind))
+    }
+    var newKeyName by rememberSaveable { mutableStateOf("") }
+    var newApiKey by rememberSaveable { mutableStateOf("") }
+    var newKeyVisible by rememberSaveable { mutableStateOf(false) }
     var models by remember(baseUrl) { mutableStateOf(emptyList<DiscoveredModel>()) }
     var modelSearch by rememberSaveable { mutableStateOf("") }
     var showModels by rememberSaveable { mutableStateOf(false) }
@@ -127,6 +155,7 @@ fun SettingsScreen(
     var isValidating by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
     var statusOk by remember { mutableStateOf(false) }
+    var antigravityCode by rememberSaveable { mutableStateOf("") }
     var terminalCleared by remember { mutableStateOf(false) }
     var showReliabilityHelp by rememberSaveable { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -145,7 +174,9 @@ fun SettingsScreen(
         scope.launch {
             isDiscovering = true
             status = null
-            val profile = ProviderProfile(selectedKind, baseUrl.trim(), model.trim())
+            val kind = selectedKind
+            val url = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl.trim()
+            val profile = ProviderProfile(kind, url, model.trim(), dshApi = dshApi)
             when (val result = onDiscoverModels(profile, apiKey.trim())) {
                 is ModelDiscoveryResult.Success -> {
                     models = result.models
@@ -270,44 +301,251 @@ fun SettingsScreen(
 
             item {
                 SettingsAccordion(
+                    title = "Coding agent",
+                    subtitle = state.agentKind.title + (state.agentMessage?.let { " · $it" } ?: ""),
+                    icon = Icons.Default.Psychology,
+                    expanded = expanded == SettingsSection.AGENT,
+                    onClick = { toggle(SettingsSection.AGENT) },
+                ) {
+                    AgentKind.entries.forEach { agent ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable(
+                                enabled = state.agentInstalling == null,
+                            ) { onInstallAgent(agent) }.padding(horizontal = 13.dp, vertical = 11.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(agent.title, fontWeight = FontWeight.Medium)
+                                    if (agent == AgentKind.DEEPSEEK_HARNESS) {
+                                        Spacer(Modifier.width(7.dp))
+                                        Surface(
+                                            color = PocketOrange.copy(alpha = 0.14f),
+                                            shape = RoundedCornerShape(50),
+                                        ) {
+                                            Text(
+                                                "Recommended",
+                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                                                color = PocketOrange,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(
+                                    agent.subtitle + " · " + agent.downloadNote,
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 2,
+                                )
+                                if (state.agentKind == agent && state.agentInstalling == null) {
+                                    Text(
+                                        "Active",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = Color(0xFF58C9A3),
+                                    )
+                                }
+                                if (state.agentInstalling == agent) {
+                                    LinearProgressIndicator(
+                                        progress = { state.agentProgress.coerceIn(0f, 1f) },
+                                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                                    )
+                                    state.agentMessage?.let {
+                                        Text(it, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            }
+                            SelectionDot(state.agentKind == agent)
+                        }
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Agent updates", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                state.agentUpdateMessage ?: "Check official releases for all installed agents",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = onCheckAgentUpdates,
+                            enabled = !state.agentUpdatesChecking && state.agentUpdating == null && state.agentInstalling == null,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 7.dp),
+                        ) {
+                            if (state.agentUpdatesChecking) {
+                                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.Refresh, null, modifier = Modifier.size(16.dp))
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            Text(if (state.agentUpdatesChecking) "Checking" else "Check", fontSize = 12.sp)
+                        }
+                    }
+                    state.agentUpdates.forEach { (agent, update) ->
+                        val updating = state.agentUpdating == agent
+                        val downloaded = state.agentUpdateDownloadedBytes
+                        val total = state.agentUpdateTotalBytes
+                        val downloadFraction = if (updating && downloaded != null && total != null && total > 0L) {
+                            (downloaded.toFloat() / total).coerceIn(0f, 1f)
+                        } else state.agentUpdateProgress.coerceIn(0f, 1f)
+                        Surface(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 5.dp),
+                            shape = RoundedCornerShape(16.dp),
+                            color = PocketOrange.copy(alpha = 0.09f),
+                            border = BorderStroke(1.dp, PocketOrange.copy(alpha = 0.32f)),
+                        ) {
+                            Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(agent.title, fontWeight = FontWeight.Bold)
+                                        Text(
+                                            "v${update.installedVersion}  →  v${update.latestVersion}",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                    Text("UPDATE", color = PocketOrange, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold)
+                                }
+                                if (updating) {
+                                    Text(
+                                        state.agentUpdateMessage.orEmpty(),
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    if (total != null && total > 0L) {
+                                        LinearProgressIndicator(
+                                            progress = { downloadFraction },
+                                            modifier = Modifier.fillMaxWidth(),
+                                        )
+                                        Row(Modifier.fillMaxWidth()) {
+                                            Text(
+                                                "${formatTransferMb(downloaded ?: 0L)} / ${formatTransferMb(total)}",
+                                                modifier = Modifier.weight(1f),
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                            Text("${(downloadFraction * 100).toInt()}%", color = PocketOrange, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                    } else {
+                                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                    }
+                                    state.agentUpdateBytesPerSecond?.takeIf { it > 0L }?.let { speed ->
+                                        Text(
+                                            "${formatTransferSpeed(speed)} · ${formatTransferEta(downloaded ?: 0L, total ?: 0L, speed)} remaining",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        )
+                                    }
+                                } else {
+                                    Button(
+                                        onClick = { onUpdateAgent(agent) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        enabled = state.agentUpdating == null && state.agentInstalling == null,
+                                    ) { Text("Update ${agent.title}") }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
+                SettingsAccordion(
                     title = "AI connection",
-                    subtitle = "${state.provider.model.ifBlank { "No model" }} · ${state.provider.kind.title}",
+                    subtitle = if (state.agentKind == AgentKind.ANTIGRAVITY) {
+                        when (state.antigravityAuth.status) {
+                            AntigravityAuthStatus.SIGNED_IN -> state.antigravityAuth.accountEmail
+                                ?.let { "Connected as $it" } ?: "Google account connected"
+                            AntigravityAuthStatus.AWAITING_CODE -> "Waiting for authorization code"
+                            AntigravityAuthStatus.COMPLETING -> "Completing Google sign-in…"
+                            AntigravityAuthStatus.STARTING -> state.antigravityAuth.message ?: "Connecting…"
+                            else -> "Google sign-in required"
+                        }
+                    } else "${state.provider.model.ifBlank { "No model" }} · ${state.provider.kind.title}",
                     icon = Icons.Default.SmartToy,
                     expanded = expanded == SettingsSection.CONNECTION,
                     onClick = { toggle(SettingsSection.CONNECTION) },
                 ) {
-                    ConnectionSettings(
+                    if (state.agentKind == AgentKind.ANTIGRAVITY) {
+                        AntigravityConnectionSettings(
+                            state = state,
+                            code = antigravityCode,
+                            onCode = { antigravityCode = it },
+                            onStartLogin = onStartAntigravityLogin,
+                            onSubmitCode = { onSubmitAntigravityCode(antigravityCode); antigravityCode = "" },
+                            onLogout = onLogoutAntigravity,
+                            onRefreshModels = onRefreshAntigravityModels,
+                            onSetModel = onSetAntigravityModel,
+                            onSetEffort = onSetAntigravityEffort,
+                        )
+                    } else ConnectionSettings(
                         state = state,
                         selectedKind = selectedKind,
                         baseUrl = baseUrl,
                         model = model,
+                        dshApi = dshApi,
                         apiKey = apiKey,
-                        keyVisible = keyVisible,
                         models = models,
                         isDiscovering = isDiscovering,
                         isValidating = isValidating,
                         status = status,
                         statusOk = statusOk,
+                        savedKeys = savedKeys,
+                        newKeyName = newKeyName,
+                        newApiKey = newApiKey,
+                        newKeyVisible = newKeyVisible,
                         onPing = onPing,
                         onProvider = { kind ->
                             selectedKind = kind
                             baseUrl = kind.defaultBaseUrl
                             model = kind.defaultModel
+                            dshApi = "anthropic-messages"
                             apiKey = getSavedApiKey(kind)
+                            savedKeys = getSavedApiKeys(kind)
                             models = emptyList()
                             status = null
                         },
                         onBaseUrl = { baseUrl = it; models = emptyList(); status = null },
                         onModel = { model = it; status = null },
-                        onApiKey = { apiKey = it; status = null },
-                        onToggleKey = { keyVisible = !keyVisible },
+                        onDshApi = { dshApi = it; status = null },
+                        onNewKeyName = { newKeyName = it },
+                        onNewApiKey = { newApiKey = it },
+                        onToggleNewKey = { newKeyVisible = !newKeyVisible },
+                        onAddKey = {
+                            savedKeys = onAddApiKey(selectedKind, newKeyName, newApiKey.trim())
+                            newKeyName = ""
+                            newApiKey = ""
+                            apiKey = getSavedApiKey(selectedKind)
+                            status = "API key added"
+                            statusOk = true
+                        },
+                        onActivateKey = { keyId ->
+                            savedKeys = onActivateApiKey(selectedKind, keyId)
+                            apiKey = getSavedApiKey(selectedKind)
+                            status = "Active API key changed"
+                            statusOk = true
+                        },
+                        onRemoveKey = { keyId ->
+                            savedKeys = onRemoveApiKey(selectedKind, keyId)
+                            apiKey = getSavedApiKey(selectedKind)
+                            status = "API key removed"
+                            statusOk = true
+                        },
                         onModels = { if (models.isEmpty()) discoverModels() else showModels = true },
                         onValidate = {
                             scope.launch {
                                 isValidating = true
                                 status = "Checking connection…"
                                 statusOk = true
-                                val profile = ProviderProfile(selectedKind, baseUrl.trim(), model.trim())
+                                val kind = selectedKind
+                                val url = if (kind.fixedBaseUrl) kind.defaultBaseUrl else baseUrl.trim()
+                                val profile = ProviderProfile(kind, url, model.trim(), dshApi = dshApi)
                                 when (val result = onValidateProvider(profile, apiKey.trim(), models)) {
                                     is ConnectionValidation.Success -> {
                                         status = result.message
@@ -368,8 +606,53 @@ fun SettingsScreen(
                             }
                         }
                         if (installing) {
-                            LinearProgressIndicator(progress = { state.devStackProgress }, modifier = Modifier.fillMaxWidth())
-                            Text(state.devStackMessage ?: "Installing…", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                            Spacer(Modifier.height(4.dp))
+                            LinearProgressIndicator(
+                                progress = { state.devStackProgress.coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth().height(7.dp),
+                                color = PocketOrange,
+                                trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                            )
+                            Spacer(Modifier.height(9.dp))
+                            state.devStackBytes?.let { (downloaded, total) ->
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+                                ) {
+                                    Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+                                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                            Text(
+                                                "${formatTransferMb(downloaded)} of ${formatTransferMb(total)}",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                fontFamily = FontFamily.Monospace,
+                                            )
+                                            state.devStackBytesPerSecond?.takeIf { it > 0L }?.let { speed ->
+                                                Text(
+                                                    "${formatTransferSpeed(speed)} · ${formatTransferEta(downloaded, total, speed)} left",
+                                                    fontSize = 11.sp,
+                                                    color = PocketOrange,
+                                                    fontFamily = FontFamily.Monospace,
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            state.devStackMessage ?: "Downloading…",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                }
+                            } ?: Text(
+                                state.devStackMessage ?: "Processing…",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
                         }
                         if (index != DevStack.entries.lastIndex) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     }
@@ -386,7 +669,26 @@ fun SettingsScreen(
                 ) {
                     RuntimeInfoRow("Architecture", "ARM64 (aarch64)")
                     RuntimeInfoRow("Environment", "Ubuntu 20.04 PRoot")
-                    RuntimeInfoRow("Agent", "Claude Code + Node.js 24")
+                    RuntimeInfoRow(
+                        "Active agent",
+                        state.agentKind.title + if (state.installedAgentVersions.containsKey(state.agentKind)) "" else " · Not installed",
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    Text(
+                        "Installed agents",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (state.installedAgentVersions.isEmpty()) {
+                        RuntimeInfoRow("Status", "No verified agent installation")
+                    } else {
+                        AgentKind.entries.forEach { agent ->
+                            state.installedAgentVersions[agent]?.let { version ->
+                                RuntimeInfoRow(agent.title, "v$version")
+                            }
+                        }
+                    }
                     Spacer(Modifier.height(8.dp))
                     OutlinedButton(
                         onClick = { onClearTerminal(); terminalCleared = true },
@@ -487,6 +789,18 @@ fun SettingsScreen(
     }
 }
 
+private fun formatTransferMb(bytes: Long): String = "%.1f MB".format(bytes.coerceAtLeast(0L) / 1_048_576.0)
+
+private fun formatTransferSpeed(bytesPerSecond: Long): String = when {
+    bytesPerSecond >= 1_048_576L -> "%.1f MB/s".format(bytesPerSecond / 1_048_576.0)
+    else -> "%.0f KB/s".format(bytesPerSecond / 1_024.0)
+}
+
+private fun formatTransferEta(downloaded: Long, total: Long, bytesPerSecond: Long): String {
+    val seconds = ((total - downloaded).coerceAtLeast(0L) / bytesPerSecond.coerceAtLeast(1L)).coerceAtLeast(1L)
+    return if (seconds >= 60L) "${seconds / 60}m ${seconds % 60}s" else "${seconds}s"
+}
+
 @Composable
 private fun SettingsAccordion(
     title: String,
@@ -532,27 +846,147 @@ private fun SettingsAccordion(
 }
 
 @Composable
+private fun AntigravityConnectionSettings(
+    state: AppUiState,
+    code: String,
+    onCode: (String) -> Unit,
+    onStartLogin: () -> Unit,
+    onSubmitCode: () -> Unit,
+    onLogout: () -> Unit,
+    onRefreshModels: () -> Unit,
+    onSetModel: (String) -> Unit,
+    onSetEffort: (String) -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    val auth = state.antigravityAuth
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        shape = RoundedCornerShape(14.dp),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("Official Antigravity CLI", fontWeight = FontWeight.SemiBold)
+            Text(
+                auth.message ?: if (auth.status == AntigravityAuthStatus.SIGNED_IN) {
+                    auth.accountEmail?.let { "Connected as $it" } ?: "Google account connected"
+                } else "Sign in using Google's browser flow.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            when (auth.status) {
+                AntigravityAuthStatus.SIGNED_IN -> OutlinedButton(onClick = onLogout, modifier = Modifier.fillMaxWidth()) {
+                    Text("Log out of Antigravity")
+                }
+                AntigravityAuthStatus.STARTING, AntigravityAuthStatus.COMPLETING -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                AntigravityAuthStatus.AWAITING_CODE -> {
+                    auth.authorizationUrl?.let { url ->
+                        OutlinedButton(
+                            onClick = { clipboard.setText(AnnotatedString(url)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Copy Google sign-in URL") }
+                    }
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = onCode,
+                        label = { Text("One-time authorization code") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Button(onClick = onSubmitCode, enabled = code.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+                        Text("Complete sign-in")
+                    }
+                }
+                AntigravityAuthStatus.SIGNED_OUT, AntigravityAuthStatus.ERROR -> Button(
+                    onClick = onStartLogin,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (auth.status == AntigravityAuthStatus.ERROR) "Reconnect with Google" else "Sign in with Google") }
+            }
+        }
+    }
+
+    if (auth.status == AntigravityAuthStatus.SIGNED_IN) {
+        Text("Model", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        OutlinedTextField(
+            value = state.antigravityModel,
+            onValueChange = onSetModel,
+            label = { Text("Antigravity model ID") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedButton(
+            onClick = onRefreshModels,
+            enabled = !state.antigravityModelsLoading,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            if (state.antigravityModelsLoading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+            else Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text("Refresh models")
+        }
+        state.antigravityModels.forEach { model ->
+            Row(
+                Modifier.fillMaxWidth().clickable { onSetModel(model) }.padding(vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(model, Modifier.weight(1f), fontSize = 12.sp)
+                SelectionDot(state.antigravityModel == model)
+            }
+        }
+        Text("Reasoning effort", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("low", "medium", "high").forEach { effort ->
+                OutlinedButton(onClick = { onSetEffort(effort) }, modifier = Modifier.weight(1f)) {
+                    Text(effort.replaceFirstChar(Char::uppercase))
+                }
+            }
+        }
+    }
+
+    Surface(color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f), shape = RoundedCornerShape(12.dp)) {
+        Text(
+            "Antigravity runs with automatic tool approval. It can edit files and execute commands inside the selected project. Review generated changes before keeping them.",
+            Modifier.fillMaxWidth().padding(12.dp),
+            color = MaterialTheme.colorScheme.onErrorContainer,
+            fontSize = 11.sp,
+        )
+    }
+}
+
+@Composable
 private fun ConnectionSettings(
     state: AppUiState,
     selectedKind: ProviderKind,
     baseUrl: String,
     model: String,
+    dshApi: String,
     apiKey: String,
-    keyVisible: Boolean,
     models: List<DiscoveredModel>,
     isDiscovering: Boolean,
     isValidating: Boolean,
     status: String?,
     statusOk: Boolean,
+    savedKeys: List<ApiKeyInfo>,
+    newKeyName: String,
+    newApiKey: String,
+    newKeyVisible: Boolean,
     onPing: () -> Unit,
     onProvider: (ProviderKind) -> Unit,
     onBaseUrl: (String) -> Unit,
     onModel: (String) -> Unit,
-    onApiKey: (String) -> Unit,
-    onToggleKey: () -> Unit,
+    onDshApi: (String) -> Unit,
+    onNewKeyName: (String) -> Unit,
+    onNewApiKey: (String) -> Unit,
+    onToggleNewKey: () -> Unit,
+    onAddKey: () -> Unit,
+    onActivateKey: (String) -> Unit,
+    onRemoveKey: (String) -> Unit,
     onModels: () -> Unit,
     onValidate: () -> Unit,
 ) {
+    val visibleKinds = remember(state.agentKind) { providersForAgent(state.agentKind) }
+    var providerExpanded by rememberSaveable { mutableStateOf(false) }
+    var addKeyExpanded by rememberSaveable(savedKeys.isEmpty()) { mutableStateOf(savedKeys.isEmpty()) }
     Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f), shape = RoundedCornerShape(14.dp)) {
         Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(8.dp).background(
@@ -567,6 +1001,9 @@ private fun ConnectionSettings(
             Column(Modifier.weight(1f)) {
                 Text("Active connection", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(state.provider.model.ifBlank { "Not configured" }, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                state.activeApiKeyName?.let { name ->
+                    Text("Key: $name", fontSize = 11.sp, color = PocketOrange, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
                 state.apiPingMessage?.let {
                     Text(it, fontSize = 11.sp, color = if (state.apiPingStatus == ApiPingStatus.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
@@ -578,11 +1015,29 @@ private fun ConnectionSettings(
     }
 
     Text("Provider", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)) {
-        Column {
-            ProviderKind.entries.forEachIndexed { index, kind ->
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable { providerExpanded = !providerExpanded },
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        border = BorderStroke(1.dp, if (providerExpanded) PocketOrange else MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(selectedKind.title, fontWeight = FontWeight.SemiBold)
+                Text(selectedKind.subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+            }
+            Icon(if (providerExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown, "Choose provider")
+        }
+    }
+    AnimatedVisibility(providerExpanded) {
+        Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.25f)) {
+            Column {
+                visibleKinds.forEachIndexed { index, kind ->
                 Row(
-                    Modifier.fillMaxWidth().clickable { onProvider(kind) }.padding(horizontal = 13.dp, vertical = 11.dp),
+                    Modifier.fillMaxWidth().clickable {
+                        onProvider(kind)
+                        providerExpanded = false
+                    }.padding(horizontal = 13.dp, vertical = 11.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(Modifier.weight(1f)) {
@@ -591,31 +1046,119 @@ private fun ConnectionSettings(
                     }
                     SelectionDot(selectedKind == kind)
                 }
-                if (index != ProviderKind.entries.lastIndex) HorizontalDivider(Modifier.padding(start = 13.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+                if (index != visibleKinds.lastIndex) HorizontalDivider(Modifier.padding(start = 13.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f))
+            }
             }
         }
     }
 
-    OutlinedTextField(baseUrl, onBaseUrl, label = { Text("Base URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(model, onModel, label = { Text("Model name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    if (selectedKind.fixedBaseUrl) {
+        Text(
+            selectedKind.defaultBaseUrl,
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    } else {
+        OutlinedTextField(baseUrl, onBaseUrl, label = { Text("Base URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    }
+    if (state.agentKind == AgentKind.DEEPSEEK_HARNESS && selectedKind == ProviderKind.CUSTOM) {
+        Text("Gateway protocol", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)) {
+            Column {
+                listOf("anthropic-messages", "openai-completions", "openai-responses").forEach { option ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onDshApi(option) }.padding(horizontal = 13.dp, vertical = 11.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(option, Modifier.weight(1f), fontSize = 13.sp)
+                        SelectionDot(dshApi == option)
+                    }
+                }
+            }
+        }
+    }
+    Text("Model", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    OutlinedTextField(model, onModel, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
     OutlinedButton(onClick = onModels, enabled = baseUrl.isNotBlank() && apiKey.isNotBlank() && !isDiscovering, modifier = Modifier.fillMaxWidth().height(50.dp)) {
         if (isDiscovering) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
         else Icon(if (models.isEmpty()) Icons.Default.Search else Icons.Default.KeyboardArrowDown, null, Modifier.size(18.dp))
         Spacer(Modifier.width(7.dp))
         Text(if (models.isEmpty()) "Find available models" else "Available models (${models.size})")
     }
-    OutlinedTextField(
-        apiKey,
-        onApiKey,
-        label = { Text("API key") },
-        singleLine = true,
-        visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-        trailingIcon = {
-            IconButton(onClick = onToggleKey) { Icon(if (keyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, "Show or hide key") }
-        },
-        modifier = Modifier.fillMaxWidth(),
-    )
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("API keys", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("${savedKeys.size} saved · automatic failover enabled", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        OutlinedButton(onClick = { addKeyExpanded = !addKeyExpanded }) {
+            Text(if (addKeyExpanded) "Cancel" else "Add key")
+        }
+    }
+    if (savedKeys.isNotEmpty()) {
+        Text("Saved API keys", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)) {
+            Column {
+                savedKeys.forEachIndexed { index, key ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable { onActivateKey(key.id) }.padding(start = 13.dp, top = 9.dp, bottom = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(key.name, fontWeight = FontWeight.Medium)
+                            Text(
+                                if (key.isActive) "Active now · tap another key to switch" else "Tap to make active",
+                                fontSize = 11.sp,
+                                color = if (key.isActive) PocketOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        SelectionDot(key.isActive)
+                        IconButton(onClick = { onRemoveKey(key.id) }) {
+                            Icon(Icons.Default.DeleteSweep, "Remove ${key.name}", Modifier.size(18.dp))
+                        }
+                    }
+                    if (index != savedKeys.lastIndex) HorizontalDivider(Modifier.padding(start = 13.dp))
+                }
+            }
+        }
+    }
+    AnimatedVisibility(addKeyExpanded) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            OutlinedTextField(
+                newKeyName,
+                onNewKeyName,
+                label = { Text("Key name") },
+                placeholder = { Text("Work, Personal, Backup…") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                newApiKey,
+                onNewApiKey,
+                label = { Text("API key") },
+                singleLine = true,
+                visualTransformation = if (newKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                trailingIcon = {
+                    IconButton(onClick = onToggleNewKey) {
+                        Icon(if (newKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility, "Show or hide new key")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Button(
+                onClick = {
+                    onAddKey()
+                    addKeyExpanded = false
+                },
+                enabled = newKeyName.isNotBlank() && newApiKey.isNotBlank(),
+                modifier = Modifier.fillMaxWidth().height(50.dp),
+            ) {
+                Text("Save API key")
+            }
+        }
+    }
     if (status != null) {
         Text(status, fontSize = 12.sp, color = if (statusOk) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
     }
