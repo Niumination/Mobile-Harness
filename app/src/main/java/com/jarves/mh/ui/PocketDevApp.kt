@@ -1304,6 +1304,21 @@ private fun AgentChoiceRow(
                         )
                     }
                 }
+                if (agent == AgentKind.CLAUDE_CODE) {
+                    Spacer(Modifier.width(7.dp))
+                    Surface(
+                        color = PocketGreen.copy(alpha = 0.14f),
+                        shape = RoundedCornerShape(50),
+                    ) {
+                        Text(
+                            "Included in Core",
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+                            color = PocketGreen,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
             }
             Spacer(Modifier.height(1.dp))
             Text(agent.subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.5.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -2044,6 +2059,10 @@ private fun ProviderSetupScreen(
                     onContinue = {
                         if (selected == ProviderKind.CLAUDE) {
                             onSave(ProviderProfile(selected), "")
+                        } else if (agentKind == AgentKind.ANTIGRAVITY) {
+                            // Antigravity signs in with Google OAuth, not an API key —
+                            // skip the (empty) provider list and finish onboarding.
+                            onSave(initial, "")
                         } else step = 2
                     },
                 )
@@ -2210,6 +2229,14 @@ private fun ProviderChoiceStep(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 13.sp,
         )
+        if (visibleProviders.isEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "This agent signs in with its own account — no API provider needed. Continue to finish setup.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 13.sp,
+            )
+        }
         Spacer(Modifier.height(12.dp))
 
         Surface(
