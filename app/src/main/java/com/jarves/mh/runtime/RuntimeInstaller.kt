@@ -880,27 +880,33 @@ class RuntimeInstaller(private val context: Context) {
         if (useEmbedded) {
             onProgress(RuntimeInstallProgress("Loading ${bundle.label} bundle", from, 0, bundle.compressedBytes))
             val temporary = File(downloads, "${bundle.fileName}.part")
-            context.assets.open("runtime/${bundle.fileName}").use { input ->
-                FileOutputStream(temporary).use { output ->
-                    val buffer = ByteArray(256 * 1024)
-                    var copied = 0L
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        output.write(buffer, 0, count)
-                        copied += count
-                        val ratio = (copied.toFloat() / bundle.compressedBytes).coerceIn(0f, 1f)
-                        onProgress(RuntimeInstallProgress("Loading ${bundle.label} bundle", from + ratio * (to - from), copied, bundle.compressedBytes))
+            val embedded = runCatching {
+                context.assets.open("runtime/${bundle.fileName}").use { input ->
+                    FileOutputStream(temporary).use { output ->
+                        val buffer = ByteArray(256 * 1024)
+                        var copied = 0L
+                        while (true) {
+                            coroutineContext.ensureActive()
+                            val count = input.read(buffer)
+                            if (count < 0) break
+                            output.write(buffer, 0, count)
+                            copied += count
+                            val ratio = (copied.toFloat() / bundle.compressedBytes).coerceIn(0f, 1f)
+                            onProgress(RuntimeInstallProgress("Loading ${bundle.label} bundle", from + ratio * (to - from), copied, bundle.compressedBytes))
+                        }
                     }
                 }
+                require(digest(temporary, "SHA-256").equals(bundle.sha256, ignoreCase = true)) {
+                    "${bundle.label} bundle checksum mismatch"
+                }
+                if (destination.exists()) destination.delete()
+                check(temporary.renameTo(destination)) { "Could not stage the ${bundle.label} bundle" }
+                destination
             }
-            require(digest(temporary, "SHA-256").equals(bundle.sha256, ignoreCase = true)) {
-                "${bundle.label} bundle checksum mismatch"
-            }
-            if (destination.exists()) destination.delete()
-            check(temporary.renameTo(destination)) { "Could not stage the ${bundle.label} bundle" }
-            return destination
+            // Online APKs carry no embedded assets: fall through to download
+            // instead of failing when forceEmbedded was requested.
+            if (embedded.isSuccess) return embedded.getOrThrow()
+            temporary.delete()
         }
 
         val url = "${BuildConfig.RUNTIME_RELEASE_BASE_URL}/${bundle.fileName}"
