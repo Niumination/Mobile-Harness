@@ -317,16 +317,24 @@ class RuntimeInstaller(private val context: Context) {
     ) {
         if (isAgentInstalled(com.jarves.mh.model.AgentKind.HERMES)) return
 
-        onProgress(RuntimeInstallProgress("Installing Hermes Agent", fraction))
-
-        val install = process(
+        // Route through runGuestCommand so pip's real error reaches the UI
+        // instead of a static "pip install failed". PEP 668 (Ubuntu 23.04+)
+        // refuses system-wide installs without --break-system-packages, and
+        // some images only ship pip3 — cover both.
+        runGuestCommand(
             proot = proot,
-            rootfs = rootfs,
-            workspace = File(rootfs, "root"),
-            environment = emptyMap(),
-            guestCommand = listOf("/usr/bin/env", "bash", "-lc", "pip install hermes-agent"),
+            command = "set -e\n" +
+                "install_hermes() { \"\$@\" install --break-system-packages hermes-agent || \"\$@\" install hermes-agent; }\n" +
+                "if python3 -m pip --version >/dev/null 2>&1; then install_hermes python3 -m pip\n" +
+                "elif command -v pip3 >/dev/null; then install_hermes pip3\n" +
+                "else install_hermes pip\n" +
+                "fi",
+            displayCommand = "Installing Hermes Agent",
+            fraction = fraction,
+            timeoutMs = 600_000L,
+            onProgress = onProgress,
+            failureMessage = "Hermes Agent pip install failed",
         )
-        check(install.waitFor() == 0) { "Hermes Agent pip install failed" }
         verifyGuest(proot, "$HERMES_GUEST_PATH --version", "Hermes Agent verification failed")
         hermesMarker.writeText(HERMES_VERSION)
         require(isAgentInstalled(com.jarves.mh.model.AgentKind.HERMES)) {
@@ -518,7 +526,7 @@ class RuntimeInstaller(private val context: Context) {
         check(expectedVersion.isNotBlank()) { "Hermes Agent version is required" }
         runGuestCommand(
             proot = runtime.proot,
-            command = "set -e; pip install --upgrade hermes-agent",
+            command = "set -e; (python3 -m pip install --break-system-packages --upgrade hermes-agent || python3 -m pip install --upgrade hermes-agent || pip3 install --break-system-packages --upgrade hermes-agent)",
             displayCommand = "Updating Hermes Agent",
             fraction = 0.5f,
             timeoutMs = 600_000L,
