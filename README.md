@@ -289,6 +289,8 @@ flowchart TB
 * **Agent Engine**: Registry-selected, isolated drivers for Claude Code, DeepSeek Harness, the official Antigravity CLI, and Hermes Agent
 * **Native Tooling**: Node.js LTS, npm, Git, OpenSSL, curl, and GNU coreutils
 * **Process Virtualization**: PRoot user-space architecture emulation with zero kernel modifications
+* **Runtime Bundle System**: Downloadable runtime packs (Core, Python, Android) with SHA-256 verification
+* **Credential Security**: Android Keystore AES-256-GCM encryption for API keys
 
 <br />
 
@@ -391,6 +393,23 @@ Mobile-Harness/
 </details>
 
 <details>
+<summary><b>Documentation</b></summary>
+
+<br />
+
+Comprehensive guides for developing and extending Mobile Harness:
+
+| Document | Description |
+|----------|-------------|
+| [Hermes Agent Integration](docs/HERMES-AGENT-INTEGRATION.md) | Full architecture, installation flow, communication protocol, and debugging guide |
+| [Development Guide](docs/DEVELOPMENT-GUIDE.md) | Complete development guide: adding agents, runtime bundles, testing, build variants |
+| [Play Store Checklist](docs/PLAY_STORE_CHECKLIST.md) | Google Play release checklist |
+| [Update Testing](docs/update-testing.md) | Testing in-app updates without publishing |
+| [Play Store Compliance](docs/play/) | Data safety, app content, foreground service declarations |
+
+</details>
+
+<details>
 <summary><b>Security model and data privacy</b></summary>
 
 <br />
@@ -406,6 +425,8 @@ Mobile-Harness/
 - Background tasks are subject to Android process and battery policies
 - Custom providers may lack Claude-compatible thinking, tool use, token counting, or streaming behavior
 - Large builds can be slow and memory-intensive under PRoot
+- Hermes Agent requires network access for `pip install` (not bundled in APK)
+- Hermes runtime bundle not yet available for offline use
 - Runtime installation requires a substantial download and free storage
 - Project-specific Android libraries may still be downloaded by Gradle when they are not already in the bundled Maven cache
 
