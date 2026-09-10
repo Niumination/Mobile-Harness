@@ -25,6 +25,7 @@ class ProviderApiClient {
         baseUrl: String,
         apiKey: String,
         protocol: ProviderProtocol,
+        sessionId: String = "",
     ): ModelDiscoveryResult = withContext(Dispatchers.IO) {
         if (baseUrl.isBlank() || apiKey.isBlank()) {
             return@withContext ModelDiscoveryResult.Failure("Enter a base URL and API key first.")
@@ -33,7 +34,7 @@ class ProviderApiClient {
         var authError = false
         var lastMessage = "This provider did not expose a model list. You can enter a custom model name."
         for (endpoint in modelEndpoints(baseUrl, protocol)) {
-            val response = request(endpoint, "GET", apiKey, protocol = protocol)
+            val response = request(endpoint, "GET", apiKey, protocol = protocol, sessionId = sessionId)
             when {
                 response.code == 401 || response.code == 403 -> authError = true
                 response.code in 200..299 -> {
@@ -54,13 +55,14 @@ class ProviderApiClient {
         apiKey: String,
         protocol: ProviderProtocol,
         discoveredModels: List<DiscoveredModel>,
+        sessionId: String = "",
     ): ConnectionValidation = withContext(Dispatchers.IO) {
         if (baseUrl.isBlank() || model.isBlank() || apiKey.isBlank()) {
             return@withContext ConnectionValidation.Failure("Base URL, model, and API key are required.")
         }
         val endpoint = messagesEndpoint(baseUrl, protocol)
         val body = validationBody(model, protocol)
-        val response = request(endpoint, "POST", apiKey, body, protocol, connectTimeoutMs = 8_000, readTimeoutMs = 10_000)
+        val response = request(endpoint, "POST", apiKey, body, protocol, connectTimeoutMs = 8_000, readTimeoutMs = 10_000, sessionId = sessionId)
         when {
             response.code in 200..299 -> ConnectionValidation.Success(
                 if (protocol == ProviderProtocol.ANTHROPIC || protocol == ProviderProtocol.ANTHROPIC_GATEWAY || protocol == ProviderProtocol.OPENROUTER) {
@@ -90,6 +92,7 @@ class ProviderApiClient {
         protocol: ProviderProtocol,
         connectTimeoutMs: Int = 12_000,
         readTimeoutMs: Int = 20_000,
+        sessionId: String = "",
     ): HttpResult {
         return runCatching {
             val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
@@ -102,6 +105,11 @@ class ProviderApiClient {
                 if (protocol != ProviderProtocol.OPENROUTER && protocol != ProviderProtocol.OPENAI_CHAT && protocol != ProviderProtocol.OPENAI_RESPONSES) {
                     setRequestProperty("x-api-key", apiKey)
                     setRequestProperty("anthropic-version", "2023-06-01")
+                }
+                // OpenCode Go requires a stable session ID for routing/prompt-caching.
+                // Without it the gateway answers 400 "missing x-opencode-session".
+                if (sessionId.isNotBlank() && endpoint.contains("/zen/go")) {
+                    setRequestProperty("x-opencode-session", sessionId)
                 }
                 if (body != null) doOutput = true
             }

@@ -15,6 +15,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.time.Instant
+import java.util.UUID
 
 class AppPreferences(private val context: Context) {
     private val preferences = context.getSharedPreferences("pocket_preferences", Context.MODE_PRIVATE)
@@ -43,6 +44,17 @@ class AppPreferences(private val context: Context) {
     var antigravityEffort: String
         get() = preferences.getString("agent_antigravity_effort", "high") ?: "high"
         set(value) { preferences.edit().putString("agent_antigravity_effort", value).apply() }
+
+    /**
+     * Stable ID sent as `x-opencode-session` to OpenCode Go endpoints.
+     * Go requires it for routing/prompt-caching; generated once per install.
+     */
+    var opencodeSessionId: String
+        get() = preferences.getString("opencode_session_id", null)
+            ?: UUID.randomUUID().toString().also {
+                preferences.edit().putString("opencode_session_id", it).apply()
+            }
+        set(value) { preferences.edit().putString("opencode_session_id", value).apply() }
 
     var antigravitySignedIn: Boolean
         get() = preferences.getBoolean("agent_antigravity_signed_in", false)
