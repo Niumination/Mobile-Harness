@@ -87,6 +87,13 @@
   di command+env, teruskan session ID (env/flag CLI atau gateway lokal ala
   Claude), tampilkan error CLI yang kini sunyi.
 
+## Verifikasi Antigravity di HP (2026-09-11, commit `ef105de`)
+
+- Install via fallback unduhan BERHASIL (sebelumnya pasti gagal);
+  OAuth Google selesai; chat agentic berjalan nyata: Think → List files
+  → Bash (node/npm/python --version, npm ping) → npm create vite react.
+- Tuntas end-to-end: instalasi, auth, eksekusi tool di workspace HP.
+
 ## Urutan & kriteria selesai
 
 1. Keputusan owner sudah masuk (lihat di atas).
