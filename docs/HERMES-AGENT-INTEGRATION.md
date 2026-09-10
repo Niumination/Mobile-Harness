@@ -59,7 +59,7 @@ This document explains the full integration architecture, how Hermes is installe
 | `AgentKind.HERMES` | `model/Models.kt` | Enum entry identifying Hermes as an agent |
 | `ProviderKind.HERMES` | `model/Models.kt` | Enum entry for the Hermes provider |
 | `HERMES_PROVIDERS` | `model/Models.kt` | Set of providers compatible with Hermes |
-| `HermesBuiltInAgentDriver` | `runtime/AgentDriver.kt` | Registers Hermes with capabilities |
+| `BuiltInAgentDriver(HERMES)` | `runtime/AgentDriver.kt` | Registered via `AgentRegistry.builtIns(...)` with API_KEY, PROVIDER_PICKER, MODEL_PICKER, RESUME, INTERACTIVE_APPROVALS |
 | `ensureHermesInstalled` | `runtime/RuntimeInstaller.kt` | Pip installs Hermes in runtime |
 | `AgentRegistry` | `runtime/AgentDriver.kt` | Orchestrates all agents including Hermes |
 
@@ -71,15 +71,11 @@ This document explains the full integration architecture, how Hermes is installe
 
 1. User selects **Hermes Agent** from the agent picker in Settings
 2. `RuntimeInstaller.ensureAgentInstalled(AgentKind.HERMES)` is called
-3. The installer checks if `File(rootfs, HERMES_GUEST_PATH).canExecute()` — if Hermes is already installed, skip
-4. If not installed, `ensureHermesInstalled()` runs:
-   ```bash
-   pip install hermes-agent
-   ```
-   inside the PRoot Linux environment
-5. After installation, verify `File(rootfs, "/usr/local/bin/hermes").canExecute()`
-6. Write `.hermes-version` marker file
-7. `hermesVersion` property returns the installed version
+3. The installer checks `isAgentInstalled(HERMES)`: the `.pocket-hermes-version` marker plus an executable `/root/.local/bin/hermes` in the rootfs — if so, skip
+4. If not installed, `ensureHermesInstalled(proot, fraction, onProgress)` runs `pip install hermes-agent` inside the PRoot guest via the shared `process()` helper, then `verifyGuest()` runs `hermes --version`
+5. On success it writes the `.pocket-hermes-version` marker (`HERMES_VERSION = "0.1.0"`)
+6. The `hermesVersion` property returns the installed version
+7. `updateAgent(HERMES)` reinstalls via `pip install --upgrade hermes-agent` (`updateHermes`)
 
 ### Prerequisites
 
@@ -109,8 +105,11 @@ interface RuntimeBridge {
     suspend fun stopSession(sessionId)
     suspend fun stopActiveSession()
     suspend fun undoLastChanges(projectId): Boolean
-    suspend fun acceptLastChanges(projectId): Boolean
-    // ... etc
+    suspend fun acceptLastChanges(projectId) // returns Unit
+    suspend fun loadPendingChanges(projectId): List<ChangeItem>
+    suspend fun undoFileChange(projectId, path): Boolean
+    suspend fun acceptFileChange(projectId, path): Boolean
+    // ... plus models(), sendMessage(), streamMessage(), cancel(), listSessions(), getSession(), available()
 }
 ```
 
@@ -124,7 +123,7 @@ hermes chat --prompt "<user's prompt>" --project "<project-slug>" [--api-url <ur
 
 The bridge handles:
 - **Process spawning** via `ProcessBuilder` in the Termux runtime
-- **Stdout streaming** — capturing `RuntimeEvent.StreamChunk` events
+- **Stdout streaming** — capturing assistant text as `RuntimeEvent.AssistantDelta` and diagnostics as `RuntimeEvent.RuntimeLog`
 - **Environment setup** — provider-specific env vars (API keys, base URLs)
 - **Error detection** — parsing JSON-RPC responses for errors
 
@@ -136,17 +135,22 @@ The bridge handles:
 | `ANTHROPIC_BASE_URL` | Anthropic protocol | Route requests to custom endpoint |
 | `ANTHROPIC_MODEL` | Anthropic protocol | Override default model |
 | `OPENAI_BASE_URL` | OpenAI-compatible | Route to gateway |
-| `OPENAI_API_KEY` | When authToken present | API authentication |
-| `ANTHROPIC_API_KEY` | When authToken present | API authentication |
+| `OPENAI_MODEL` | OpenAI-compatible | Override default model |
+| `HERMES_PROVIDER` | Other protocols | Provider kind passthrough |
+| `OPENAI_API_KEY` | Token from vault (`secretFor`) | API authentication |
+| `ANTHROPIC_API_KEY` | Token from vault (`secretFor`) | API authentication |
+
+> `ProviderProfile` has no `authToken` field — the token is resolved via the `secretFor` lambda (Android Keystore vault), keyed by `ProviderKind`.
 
 ### Supported Providers for Hermes
 
 Hermes supports the same provider protocol as the 9router/gateway:
 
-- **9router** (`NINE_ROUTER`) — local model router at `http://localhost:20128/v1`
+`HERMES_PROVIDERS = { HERMES, NINE_ROUTER, AGENTROUTER, CUSTOM }` (`model/Models.kt`):
+- **Hermes** (`HERMES`) — default Hermes provider entry
+- **9router** (`NINE_ROUTER`) — local model router
 - **AgentRouter** (`AGENTROUTER`) — multi-model gateway
-- **Huancheng** (`HUANCHENG`) — Anthropic-compatible endpoint
-- **Custom** (`CUSTOM`) — any Anthropic-compatible API endpoint
+- **Custom** (`CUSTOM`) — user-configured endpoint (Anthropic-compatible gateway flow)
 
 ---
 
@@ -183,7 +187,7 @@ su -c "cat ~/.hermes/logs/*.log"
 The bridge follows the same testing pattern as `ClaudeRuntimeBridge`:
 - Unit tests verify `buildHermesCommand()` generates correct arguments
 - Integration tests verify `startSession()` emits `RuntimeEvent.SessionStarted`
-- Error handling tests verify `RuntimeEvent.Error` is emitted on failures
+- Error handling tests verify `RuntimeEvent.SessionFailed` is emitted on failures
 
 ### Hermes Configuration
 
@@ -240,7 +244,7 @@ The bundle would be stored in `scripts/runtime-bundles/` and distributed via the
 | Hermes not found after install | pip install failed or pip path wrong | Check `pip install hermes-agent` output in runtime |
 | `hermes` command not executable | Binary not in `/usr/local/bin/` | Check file permissions: `ls -la /usr/local/bin/hermes` |
 | Provider connection error | Wrong API key or base URL | Verify provider config in Settings |
-| Session starts but no response | Hermes CLI crashed or timed out | Check `RuntimeEvent.Error` for details |
+| Session starts but no response | Hermes CLI crashed or timed out | Check logcat / `RuntimeEvent.SessionFailed` for details |
 | Memory not persisting | Runtime filesystem issue | Verify `.hermes/memory/` directory exists |
 | Skills not loading | Skills directory missing | Check `~/.hermes/skills/` in runtime |
 

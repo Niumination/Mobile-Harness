@@ -61,7 +61,7 @@ Create and validate the Play bundle:
   -PplayBuild=true \
   -PappVersionCode=1 \
   -PappVersionName=1.0.0 \
-  -PprivacyPolicyUrl=https://github.com/techjarves/Mobile-Harness/blob/main/PRIVACY.md \
+  -PprivacyPolicyUrl=https://github.com/Niumination/Mobile-Harness/blob/main/PRIVACY.md \
   playReadinessCheck bundleRelease
 ```
 

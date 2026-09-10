@@ -38,7 +38,7 @@ The final two arguments are optional and default to `4` and
 
 ## 2. Point the debug app at the manifest
 
-On the Moto, open **Settings → Update channel** (debug builds only —
+On the phone, open **Settings → Update channel** (debug builds only —
 hidden in release builds).
 
 Paste:

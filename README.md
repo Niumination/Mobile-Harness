@@ -10,7 +10,7 @@
 
   <br />
 
-  [![Release v1.0.3](https://img.shields.io/badge/Release-v1.0.3-F28C52?style=flat-square&logo=github&logoColor=white)](https://github.com/techjarves/Mobile-Harness/releases/tag/v1.0.3)
+  [![Release v1.0.3](https://img.shields.io/badge/Release-v1.0.3-F28C52?style=flat-square&logo=github&logoColor=white)](https://github.com/Niumination/Mobile-Harness/releases/tag/v1.0.3)
   [![Android 9+](https://img.shields.io/badge/Android-9%2B-3DDC84?style=flat-square&logo=android&logoColor=white)](#system-requirements)
   [![ARM64](https://img.shields.io/badge/CPU-ARM64-5B8DEF?style=flat-square)](#system-requirements)
   [![MIT License](https://img.shields.io/badge/License-MIT-8B7CF6?style=flat-square&logo=opensourceinitiative&logoColor=white)](LICENSE)
@@ -18,8 +18,8 @@
 
   <br />
 
-  [**Download Online APK**](https://github.com/techjarves/Mobile-Harness/releases/download/v1.0.3/mobile-harness-online-v1.0.3.apk) &nbsp;•&nbsp;
-  [**Download Offline APK**](https://github.com/techjarves/Mobile-Harness/releases/download/v1.0.3/mobile-harness-offline-v1.0.3.apk) &nbsp;•&nbsp;
+  [**Download Online APK (v1.0.3)**](https://github.com/Niumination/Mobile-Harness/releases/download/v1.0.3/app-online-debug.apk) &nbsp;•&nbsp;
+  [**All Releases**](https://github.com/Niumination/Mobile-Harness/releases) &nbsp;•&nbsp;
   [**Watch Walkthrough (3 min)**](https://youtu.be/QzAau52Z7yQ) &nbsp;•&nbsp;
   [**Quickstart Guide**](#quickstart) &nbsp;•&nbsp;
   [**Architecture**](#architecture) &nbsp;•&nbsp;
@@ -60,16 +60,16 @@
   <tr>
     <td width="50%" valign="top" align="center">
       <h3>Online Edition</h3>
-      <p><strong>44.6 MB · Recommended</strong></p>
+      <p><strong>62 MB · Recommended</strong></p>
       <p>Start with the smaller APK. Core, Python, and Android runtime bundles are downloaded only when needed.</p>
-      <a href="https://github.com/techjarves/Mobile-Harness/releases/download/v1.0.3/mobile-harness-online-v1.0.3.apk">
+      <a href="https://github.com/Niumination/Mobile-Harness/releases/download/v1.0.3/app-online-debug.apk">
         <img src="https://img.shields.io/badge/Download-Online_APK-F28C52?style=for-the-badge&logo=android&logoColor=white" alt="Download Online APK" />
       </a>
     </td>
     <td width="50%" valign="top" align="center">
       <h3>Offline Edition</h3>
       <p><strong>818.5 MB · Everything included</strong></p>
-      <p>Includes the Core, Python, and Android runtime bundles for setup with limited or unavailable internet.</p>
+      <p>Includes the Core, Python, and Android runtime bundles for setup with limited or unavailable internet. The Offline edition is published upstream; fork CI currently builds and releases the Online edition only.</p>
       <a href="https://github.com/techjarves/Mobile-Harness/releases/download/v1.0.3/mobile-harness-offline-v1.0.3.apk">
         <img src="https://img.shields.io/badge/Download-Offline_APK-5B8DEF?style=for-the-badge&logo=android&logoColor=white" alt="Download Offline APK" />
       </a>
@@ -165,10 +165,10 @@ Mobile Harness unites modern **Jetpack Compose UI** with a self-contained **Ubun
 
 Get up and running in 3 guided steps:
 
-> **Play Protect Note:** Default debug APKs are blocked on Android 13+. Use `./gradlew -PplayBuild=true assembleDebug` for a compatible APK installable via file manager — no ADB or upload keystore needed.
+> **Play Protect Note:** Default debug APKs are blocked on Android 13+. Use `./gradlew -PplayBuild=true :app:assembleOnlineDebug` for a compatible APK installable via file manager — no ADB or upload keystore needed.
 
 ### 1. Download & Install
-Download the latest signed release APK from [GitHub Releases](https://github.com/techjarves/Mobile-Harness/releases/latest).
+Download the latest signed release APK from [GitHub Releases](https://github.com/Niumination/Mobile-Harness/releases/latest).
 
 ```text
 Target Architecture : ARM64 (arm64-v8a)
@@ -327,32 +327,34 @@ flowchart TB
 ### Clone & Build Debug APK
 ```bash
 # Clone the repository
-git clone https://github.com/techjarves/Mobile-Harness.git
+git clone --recurse-submodules https://github.com/Niumination/Mobile-Harness.git
 cd Mobile-Harness
 
-# Build the standard ARM64 debug binary
-./gradlew assembleDebug
+# Build the Online-flavor ARM64 debug APK (Play Protect compatible)
+./gradlew -PplayBuild=true :app:assembleOnlineDebug
 
-# Deploy directly to a connected test device
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+# Copy app/build/outputs/apk/online/debug/app-online-debug.apk to the
+# phone and install via file manager — no ADB, cable, or Android Studio needed
 ```
 
 ### Quality Assurance & Testing
 ```bash
-# Run unit tests
-./gradlew testDebugUnitTest
+# Run unit tests (both flavors — generic names are ambiguous)
+./gradlew :app:testOnlineDebugUnitTest :app:testOfflineDebugUnitTest
 
-# Run static analysis linter
-./gradlew lintDebug
+# Run static analysis linter (both flavors)
+./gradlew :app:lintOnlineDebug :app:lintOfflineDebug
 ```
 
 ### Target Profiles
 * **Direct Sideload APK** (Default): Targets API 28 to preserve proven userspace execution paths under Android 10-14.
-* **Google Play Compliance Build**:
+* **Google Play Compliance Build** (targetSdk 36, Play Protect compatible):
   ```bash
-  ./gradlew -PplayBuild=true assembleDebug
+  ./gradlew -PplayBuild=true :app:assembleOnlineDebug
   ```
+  Install the resulting `app-online-debug.apk` via file manager, no ADB needed.
   Refer to the [Google Play Release Checklist](docs/PLAY_STORE_CHECKLIST.md) for signing and permission policies.
+* **Offline Flavor**: `./gradlew :app:assembleOfflineDebug` bundles runtimes for no-network setup (requires `dist/runtime-bundles/` present).
 
 </details>
 

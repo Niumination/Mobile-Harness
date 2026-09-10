@@ -4,7 +4,7 @@
 **Lokasi:** `~/Desktop/Niumination/apps/Mobile-Harness/`
 **Pengguna:** Niumination / Afrizal Munthe
 **Branch:** `main`
-**Latest Commit:** `7474350`
+**Latest Commit:** `08b8c39`
 
 ---
 
@@ -77,17 +77,17 @@ All agents follow the same architecture:
 ## Build & Test
 
 ```bash
-# Standard debug APK
-./gradlew assembleDebug
+# Online-flavor debug APK, Play Protect compatible (targetSdk 36)
+./gradlew -PplayBuild=true :app:assembleOnlineDebug
 
-# Unit tests
-./gradlew testDebugUnitTest
+# Unit tests (both flavors)
+./gradlew :app:testOnlineDebugUnitTest :app:testOfflineDebugUnitTest
 
-# Static analysis
-./gradlew lintDebug
+# Static analysis (both flavors)
+./gradlew :app:lintOnlineDebug :app:lintOfflineDebug
 
-# Deploy to device
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+# Install: copy app/build/outputs/apk/online/debug/app-online-debug.apk
+# to the phone, install via file manager — no ADB needed
 ```
 
 ---
@@ -144,18 +144,21 @@ The `deepseek_harness` branch provided the multi-agent infrastructure. Merge con
 
 ### GitHub Actions CI (`.github/workflows/build.yml`)
 - **3 jobs**: Lint Check, Unit Tests, Build & Release APK
-- **Key commands**:
-  - `./gradlew lintDebug` — lint all flavors
-  - `./gradlew testDebugUnitTest` — run unit tests
-  - `./gradlew -PplayBuild=true assembleDebug` — build Play Protect-compatible APK
+- **Key commands** (generic names are ambiguous with 2 flavors — always qualify):
+  - `./gradlew :app:lintOnlineDebug :app:lintOfflineDebug`
+  - `./gradlew :app:testOnlineDebugUnitTest :app:testOfflineDebugUnitTest`
+  - `./gradlew -PplayBuild=true :app:assembleOnlineDebug` — Play Protect-compatible APK (targetSdk 36)
+- **Checkout**: `actions/checkout@v4` with `submodules: recursive` (C++ bridge needs `third_party/proot`, `third_party/libandroid-shmem`)
 - **Android SDK setup**: `android-actions/setup-android@v3` with `packages` input (space-separated string)
-- **Java**: `actions/setup-java@v5` (not v4)
-- **Release**: `softprops/action-gh-release@v1` automatically creates GitHub Release with APK
+- **Java**: `actions/setup-java@v5`
+- **Release**: `softprops/action-gh-release@v1` uploads `app/build/outputs/apk/online/debug/app-online-debug.apk` (current: v1.0.3, 62 MB)
 
 ### Known Issues & Fixes
-- `lintOnlineDebug`/`testOnlineDebugUnitTest` don't exist → use generic `lintDebug`/`testDebugUnitTest`
-- `android-actions/setup-android@v3` doesn't accept `compile-sdk`/`target-sdk`/`min-sdk`/`ndk-version` → use `packages: "cmdline-tools;latest platforms;android-36 ..."`
+- Generic `lintDebug`/`testDebugUnitTest`/`assembleDebug` are AMBIGUOUS (flavors `online`+`offline`) → use `:app:`-qualified per-flavor tasks (the old note claiming the reverse was wrong)
+- `android-actions/setup-android` only accepts `packages` input (space-separated string), not `compile-sdk`/`target-sdk`/`min-sdk` → `@v3` with the string below
 - `setup-java@v4` deprecated → use `@v5`
+- `test-secrets.properties` missing → CI creates a minimal one before Gradle runs
+- Debug CI builds skip runtime bundling (`prepare*Assets` are no-ops) → APK is online-flavor only
 
 ---
 
@@ -170,6 +173,8 @@ The `deepseek_harness` branch provided the multi-agent infrastructure. Merge con
 | 2026-09-10 | Merge `deepseek_harness` into `main` — multi-agent infrastructure |
 | 2026-09-10 | Hermes Agent integration (`7474350`) — full bridge + installer + UI |
 | 2026-09-10 | Documentation created — `HERMES-AGENT-INTEGRATION.md`, `DEVELOPMENT-GUIDE.md` |
+| 2026-09-10 | CI green: per-flavor tasks, submodules recursive, online APK → Release v1.0.3 (62 MB) |
+| 2026-09-10 | Full docs sync to actual state: README, DEVELOPMENT-GUIDE, HERMES doc, PLAY_STORE, update-testing, AGENTS.md |
 
 ## CI Debug Notes
 
@@ -198,11 +203,12 @@ The `deepseek_harness` branch provided the multi-agent infrastructure. Merge con
 
 ### Current Working CI Configuration
 ```yaml
+- actions/checkout@v4 with submodules: recursive
+- actions/setup-java@v5
 - android-actions/setup-android@v3
   with: packages: "cmdline-tools;latest platforms;android-36 platforms;android-28 build-tools;36.0.0 build-tools;28.0.3 ndk;26.1.10909125"
-- actions/setup-java@v5
-- ./gradlew lintDebug
-- ./gradlew testDebugUnitTest
-- ./gradlew -PplayBuild=true assembleDebug
-- softprops/action-gh-release@v1
+- ./gradlew :app:lintOnlineDebug :app:lintOfflineDebug
+- ./gradlew :app:testOnlineDebugUnitTest :app:testOfflineDebugUnitTest
+- ./gradlew -PplayBuild=true :app:assembleOnlineDebug
+- softprops/action-gh-release@v1 → app-online-debug.apk
 ```

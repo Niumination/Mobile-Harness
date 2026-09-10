@@ -2,7 +2,7 @@
 
 > **Project:** Mobile Harness (`com.jarves.mh`)
 > **Branch:** `main`
-> **Latest Commit:** `7474350`
+> **Latest Commit:** `08b8c39`
 > **Last Updated:** 2026-09-10
 
 This guide covers all aspects of developing Mobile Harness, from architecture overview to agent integration patterns.
@@ -13,7 +13,7 @@ This guide covers all aspects of developing Mobile Harness, from architecture ov
 
 Mobile Harness is an Android application that provides a full coding environment on mobile devices. It bridges native Android Jetpack Compose UI to an isolated PRoot Linux execution layer.
 
-> ⚠️ **Play Protect Notice:** Default debug builds use `targetSdk 28` and are blocked by Play Protect on Android 13+. Use `./gradlew -PplayBuild=true assembleDebug` to build a compatible APK without ADB or upload keystore.
+> ⚠️ **Play Protect Notice:** Default debug builds use `targetSdk 28` and are blocked by Play Protect on Android 13+. Use `./gradlew -PplayBuild=true :app:assembleOnlineDebug` to build a compatible APK (online flavor, targetSdk 36) without ADB or upload keystore. Install `app/build/outputs/apk/online/debug/app-online-debug.apk` via file manager.
 
 ### Core Architecture
 
@@ -106,7 +106,7 @@ NEW_PROVIDER("Provider Name", "Subtitle", ProviderProtocol.OPENAI_CHAT, "url", "
 And create a providers list:
 
 ```kotlin
-private val NEW_AGENT_PROVIDERS = listOf(ProviderKind.PROVIDER1, ProviderKind.PROVIDER2)
+private val NEW_AGENT_PROVIDERS = setOf(ProviderKind.PROVIDER1, ProviderKind.PROVIDER2)
 ```
 
 Update `providersForAgent`:
@@ -120,7 +120,10 @@ AgentKind.NEW_AGENT -> ProviderKind.entries.filter { it in NEW_AGENT_PROVIDERS }
 Create `app/src/main/java/com/jarves/mh/runtime/NewAgentRuntimeBridge.kt`:
 
 ```kotlin
-internal class NewAgentRuntimeBridge(private val context: Context) : RuntimeBridge {
+internal class NewAgentRuntimeBridge(
+    private val context: Context,
+    private val secretFor: (ProviderProfile) -> String?,
+) : RuntimeBridge {
     private val _events = MutableSharedFlow<RuntimeEvent>(replay = 0)
     override val events: Flow<RuntimeEvent> get() = _events
     
@@ -178,11 +181,11 @@ com.jarves.mh.model.AgentKind.NEW_AGENT -> isInstalled() &&
 
 // Add the installation method:
 private suspend fun ensureNewAgentInstalled(
-    proot: Proot,
-    progressOffset: Float,
+    proot: File, // the proot binary — there is no `Proot` class
+    fraction: Float,
     onProgress: suspend (RuntimeInstallProgress) -> Unit,
 ) {
-    // ... installation logic ...
+    // ... installation logic, e.g. process(...) + verifyGuest(...) ...
 }
 ```
 
@@ -251,26 +254,27 @@ User selects agent → RuntimeInstaller checks if agent installed
 ### Unit Tests
 
 ```bash
-./gradlew testDebugUnitTest
+./gradlew :app:testOnlineDebugUnitTest :app:testOfflineDebugUnitTest
 ```
 
 Run specific tests:
 
 ```bash
-./gradlew testDebugUnitTest --tests "com.jarves.mh.runtime.RuntimeInstallerTest"
+./gradlew :app:testOnlineDebugUnitTest --tests "com.jarves.mh.runtime.*"
 ```
 
 ### Static Analysis
 
 ```bash
-./gradlew lintDebug
+./gradlew :app:lintOnlineDebug :app:lintOfflineDebug
 ```
 
 ### Testing on Device
 
 ```bash
-./gradlew assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+./gradlew -PplayBuild=true :app:assembleOnlineDebug
+# copy app/build/outputs/apk/online/debug/app-online-debug.apk to the phone,
+# install via file manager — no ADB needed
 ```
 
 ### Debugging Runtime
@@ -292,25 +296,25 @@ adb shell su -c "chroot /data/data/com.jarves.mh/files/home /bin/bash"
 
 ## Build Variants
 
-### Standard Debug APK
+### Standard Debug APK (Online Flavor)
 
 ```bash
-./gradlew assembleDebug
+./gradlew -PplayBuild=true :app:assembleOnlineDebug
 ```
+
+The generic `assembleDebug` task name is ambiguous (two flavors: `online`, `offline`) and fails task resolution — always qualify with `:app:` and the flavor. CI builds the online flavor and publishes `app-online-debug.apk` to GitHub Releases. Always clone with `--recurse-submodules` — the C++ bridge needs `third_party/proot` and `third_party/libandroid-shmem`.
 
 ### Play-Compliant Build
 
-```bash
-./gradlew -PplayBuild=true assembleDebug
-```
+`-PplayBuild=true` switches `targetSdk` 28 → 36 so the APK is Play Protect compatible and sideloadable via file manager on Android 13+ without ADB or an upload keystore.
 
-### Offline Build
-
-For environments without internet, use bundled runtime only:
+### Offline Flavor
 
 ```bash
-./gradlew assembleDebug -POFFLINE_RUNTIME_BUNDLES=true
+./gradlew :app:assembleOfflineDebug
 ```
+
+The offline flavor sets `OFFLINE_RUNTIME_BUNDLES=true` (a BuildConfig flag, not a `-P` property) and expects pre-staged files under `dist/runtime-bundles/`. Debug CI builds intentionally skip bundling (`prepare*Assets` tasks are no-ops) so the APK stays small and downloadable on demand.
 
 ---
 
@@ -338,11 +342,11 @@ Key version constants are in `app/src/main/java/com/jarves/mh/` subpackages. Che
 
 All agent bridges follow this pattern:
 
-1. **Class**: `XxxRuntimeBridge(context: Context) : RuntimeBridge`
+1. **Class**: `XxxRuntimeBridge(context, secretFor) : RuntimeBridge` — `secretFor` resolves the API token from `ApiKeyVault`, keyed by `ProviderProfile.kind`
 2. **Events**: `MutableSharedFlow<RuntimeEvent>` for streaming events
 3. **Session**: `startSession()` spawns process, returns sessionId
-4. **Streaming**: Background coroutine reads stdout, emits `RuntimeEvent.StreamChunk`
-5. **Cleanup**: `stopSession()` destroys process, emits `RuntimeEvent.SessionEnded`
+4. **Streaming**: Background coroutine reads stdout, emits `RuntimeEvent.AssistantDelta` / `RuntimeLog`
+5. **Cleanup**: `stopSession()` destroys process, emits `RuntimeEvent.SessionCompleted`
 
 ### AgentDriver Pattern
 
@@ -379,6 +383,8 @@ BuiltInAgentDriver(
 | Commit | Description | Key Changes |
 |--------|-------------|-------------|
 | `7474350` | Hermes Agent integration | Full Hermes bridge, 322 new lines |
+| `3d700d2`–`57164b8` | Hermes compile fixes | HERMES_PROVIDERS, exhaustive Dsh mapper, bridge events, installer rewrite |
+| `1ce7380` | CI green | Per-flavor tasks, submodules, online APK → Release v1.0.3 |
 | `2f8f38a` | CI cleanup | Removed release workflow |
 | `4805af2` | CI lint | Limited build to lint + unit tests |
 
