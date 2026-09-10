@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import com.jarves.mh.model.ChatMessage
 import com.jarves.mh.model.ChangeItem
-import com.jarves.mh.model.ProviderKind
 import com.jarves.mh.model.ProjectKind
 import com.jarves.mh.model.ProviderProfile
 import com.jarves.mh.model.RuntimeEvent
@@ -12,7 +11,6 @@ import com.jarves.mh.model.ToolRequest
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
-import java.io.OutputStreamWriter
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
@@ -21,20 +19,15 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
-import org.json.JSONObject
 
 /**
  * Hermes Runtime Bridge.
- * 
- * Communicates with the Hermes Agent CLI running inside the Termux/Linux runtime.
- * Hermes is installed via pip in the private runtime and invoked as `hermes` command.
- * 
- * Unlike Claude Code (which uses `claude --prompt`), Hermes uses a different
- * interaction pattern: it's a long-running agent that responds to prompts
- * via its CLI or HTTP API.
- * 
- * The bridge sends prompts to Hermes via `hermes chat` command and captures
- * streaming output.
+ *
+ * Invokes the real Hermes Agent CLI (`pip install hermes-agent`) inside the
+ * PRoot Linux guest via [RuntimeInstaller.process] — the same mechanism the
+ * DeepSeek bridge uses. One-shot mode (`hermes chat -q … -Q`) prints the final
+ * response as plain text; provider selection uses Hermes' built-in provider
+ * names (`-m MODEL --provider NAME`, see the hermes-agent skill reference).
  */
 internal class HermesRuntimeBridge(
     private val context: Context,
@@ -43,10 +36,9 @@ internal class HermesRuntimeBridge(
     private val _events = MutableSharedFlow<RuntimeEvent>(replay = 0)
     override val events: Flow<RuntimeEvent> get() = _events
 
+    private val installer = RuntimeInstaller(context)
     private val sessions = ConcurrentHashMap<String, SessionState>()
     private var activeSessionId: String? = null
-    private var process: Process? = null
-    private var writer: OutputStreamWriter? = null
 
     companion object {
         private const val TAG = "HermesBridge"
@@ -87,28 +79,54 @@ internal class HermesRuntimeBridge(
 
         withContext(Dispatchers.IO) {
             try {
-                // Build the Hermes command
-                // Hermes CLI: hermes chat --prompt <prompt> --project <slug>
-                val hermesCmd = buildHermesCommand(prompt, projectSlug, provider, conversationHistory)
-                val env = buildHermesEnvironment(provider)
-
-                // Launch Hermes process
-                val processBuilder = ProcessBuilder(*hermesCmd.toTypedArray())
-                    .apply {
-                        directory(File("/data/data/com.jarves.mh/files/home"))
-                        environment().putAll(env)
-                        redirectErrorStream(true)
+                val installed = installer.installedRuntime()
+                if (!installer.isAgentInstalled(com.jarves.mh.model.AgentKind.HERMES)) {
+                    _events.emit(
+                        RuntimeEvent.SessionFailed(
+                            sessionId,
+                            "Hermes Agent is not installed. Open Settings → Coding agent to install it.",
+                        ),
+                    )
+                    state.isActive = false
+                    return@withContext
+                }
+                val token = secretFor(provider)
+                if (token.isNullOrBlank()) {
+                    _events.emit(
+                        RuntimeEvent.SessionFailed(sessionId, "API key is missing. Reconnect the provider in Settings."),
+                    )
+                    state.isActive = false
+                    return@withContext
+                }
+                // Real Hermes CLI: `hermes chat -q PROMPT -Q -m MODEL --provider NAME`.
+                val hermesCmd = buildHermesCommand(prompt, provider)
+                    ?: run {
+                        _events.emit(
+                            RuntimeEvent.SessionFailed(
+                                sessionId,
+                                "Endpoint ${provider.resolvedBaseUrl} has no built-in Hermes provider mapping yet.",
+                            ),
+                        )
+                        state.isActive = false
+                        return@withContext
                     }
-
-                // Actually, Hermes is invoked via uvx in the Termux runtime
-                // Use the spawn mechanism via the runtime service
-                state.process = startHermesProcess(hermesCmd, env, sessionId)
+                val env = buildHermesEnvironment(provider, token)
+                val workspace = File(context.filesDir, "workspaces/$projectSlug").apply { mkdirs() }
+                state.process = installer.process(
+                    installed.proot,
+                    installed.rootfs,
+                    workspace,
+                    env,
+                    hermesCmd,
+                    guestWorkspacePath = "/workspace/$projectSlug",
+                )
                 state.isActive = true
 
                 // Stream output
                 _events.emit(RuntimeEvent.SessionStarted(sessionId))
                 streamHermesOutput(state)
             } catch (e: Exception) {
+                Log.e(TAG, "Hermes session failed", e)
                 _events.emit(RuntimeEvent.SessionFailed(sessionId, e.message ?: "Failed to start Hermes"))
                 state.isActive = false
             }
@@ -158,153 +176,95 @@ internal class HermesRuntimeBridge(
     // --- Hermes-specific methods ---
 
     /**
-     * Build the Hermes CLI command.
-     * Hermes supports: hermes chat --prompt <text> [--project <slug>] [--model <model>]
+     * Build the real Hermes CLI command.
+     * One-shot: `hermes chat -q PROMPT -Q -m MODEL --provider NAME`.
+     * Returns null when the endpoint has no built-in Hermes provider mapping.
      */
-    private fun buildHermesCommand(
-        prompt: String,
-        projectSlug: String,
-        provider: ProviderProfile,
-        history: List<ChatMessage>,
-    ): List<String> {
-        val cmd = mutableListOf<String>()
-
-        // Hermes is invoked via uvx: uvx hermes
-        // Or directly if installed: hermes
-        // For now, use the hermes command
-        // For HTTP-based providers: hermes chat --prompt ... --api ...
-        
-        // Build based on provider protocol
-        when (provider.effectiveProtocol()) {
-            com.jarves.mh.model.ProviderProtocol.OPENAI_CHAT -> {
-                // Hermes with HTTP-based provider
-                cmd.addAll(listOf(
-                    "hermes",
-                    "chat",
-                    "--prompt", prompt,
-                    "--project", projectSlug,
-                ))
-            }
-            else -> {
-                cmd.addAll(listOf(
-                    "hermes",
-                    "chat",
-                    "--prompt", prompt,
-                    "--project", projectSlug,
-                ))
-            }
-        }
-
-        // Add provider configuration if available
-        if (provider.baseUrl.isNotEmpty()) {
-            cmd.addAll(listOf("--api-url", provider.baseUrl))
-        }
-
-        return cmd
+    private fun buildHermesCommand(prompt: String, provider: ProviderProfile): List<String>? {
+        val mapped = mapProvider(provider) ?: return null
+        return listOf(
+            HERMES_EXECUTABLE,
+            HERMES_CHAT_CMD,
+            "-q", prompt,
+            "-Q",
+            "-m", provider.model.ifBlank { return null },
+            "--provider", mapped.name,
+        )
     }
 
-    /**
-     * Build the environment for the Hermes process.
-     */
-    private fun buildHermesEnvironment(provider: ProviderProfile): Map<String, String> {
+    /** Built-in Hermes provider name + key env for a known endpoint host. */
+    private data class HermesProvider(val name: String, val keyEnv: String)
+
+    private fun mapProvider(provider: ProviderProfile): HermesProvider? {
+        val base = provider.resolvedBaseUrl.lowercase()
+        return when {
+            "opencode.ai/zen/go" in base -> HermesProvider("opencode-go", "OPENCODE_GO_API_KEY")
+            "opencode.ai/zen" in base -> HermesProvider("opencode-zen", "OPENCODE_ZEN_API_KEY")
+            "api.anthropic.com" in base -> HermesProvider("anthropic", "ANTHROPIC_API_KEY")
+            "api.openai.com" in base -> HermesProvider("openai", "OPENAI_API_KEY")
+            "api.deepseek.com" in base -> HermesProvider("deepseek", "DEEPSEEK_API_KEY")
+            "generativelanguage.googleapis.com" in base -> HermesProvider("gemini", "GOOGLE_API_KEY")
+            "api.x.ai" in base -> HermesProvider("xai", "XAI_API_KEY")
+            "openrouter.ai" in base -> HermesProvider("openrouter", "OPENROUTER_API_KEY")
+            else -> null
+        }
+    }
+
+    /** Key env only — Hermes reads settings from its config, secrets from env. */
+    private fun buildHermesEnvironment(provider: ProviderProfile, token: String): Map<String, String> {
         val env = mutableMapOf<String, String>()
         env["DISABLE_AUTOUPDATER"] = "1"
-
-        when (provider.effectiveProtocol()) {
-            com.jarves.mh.model.ProviderProtocol.ANTHROPIC -> {
-                env["ANTHROPIC_BASE_URL"] = provider.baseUrl.trimEnd('/')
-                env["ANTHROPIC_MODEL"] = provider.model
-            }
-            com.jarves.mh.model.ProviderProtocol.OPENAI_CHAT -> {
-                env["OPENAI_BASE_URL"] = provider.baseUrl.trimEnd('/')
-                env["OPENAI_MODEL"] = provider.model
-            }
-            com.jarves.mh.model.ProviderProtocol.ANTHROPIC_GATEWAY -> {
-                env["ANTHROPIC_BASE_URL"] = provider.baseUrl.trimEnd('/')
-                env["ANTHROPIC_MODEL"] = provider.model
-            }
-            else -> {
-                // Use default settings
-                env["HERMES_PROVIDER"] = provider.kind.title.lowercase()
-            }
-        }
-
-        // Add API key if present
-        secretFor(provider)?.let { token ->
-            when (provider.effectiveProtocol()) {
-                com.jarves.mh.model.ProviderProtocol.ANTHROPIC -> env["ANTHROPIC_API_KEY"] = token
-                com.jarves.mh.model.ProviderProtocol.OPENAI_CHAT -> env["OPENAI_API_KEY"] = token
-                com.jarves.mh.model.ProviderProtocol.ANTHROPIC_GATEWAY -> env["ANTHROPIC_API_KEY"] = token
-                else -> {}
-            }
-        }
-
+        mapProvider(provider)?.let { env[it.keyEnv] = token }
         return env
     }
 
     /**
-     * Start the Hermes process.
-     * Hermes is run via uvx in the Termux/Linux runtime.
-     */
-    private fun startHermesProcess(cmd: List<String>, env: Map<String, String>, sessionId: String): Process? {
-        // Hermes is invoked through the RuntimeExecutionService which handles
-        // spawning processes in the Termux runtime via the native bridge.
-        // For now, construct the command that the service will execute.
-        
-        // The actual invocation happens through RuntimeExecutionService.spawn()
-        // which communicates with the Termux runtime
-        
-        return try {
-            // Try direct execution first (for testing)
-            ProcessBuilder(*cmd.toTypedArray())
-                .apply {
-                    directory(File("/data/data/com.jarves.mh/files/home"))
-                    environment().putAll(env)
-                    redirectErrorStream(true)
-                }
-                .start()
-        } catch (e: Exception) {
-            // Fall back to the Termux runtime execution
-            Log.w(TAG, "Direct process start failed, using Termux runtime: ${e.message}")
-            null
-        }
-    }
-
-    /**
-     * Stream output from the Hermes process.
+     * Stream plain-text output from `hermes chat -q -Q`. Every line is
+     * forwarded as it arrives; a non-zero exit fails loudly with the tail
+     * instead of hanging silently.
      */
     private suspend fun streamHermesOutput(state: SessionState) {
-        if (state.process == null) return
-
-        val reader = BufferedReader(InputStreamReader(state.process?.inputStream))
-        var line: String?
-
+        val proc = state.process
+        if (proc == null) {
+            _events.emit(RuntimeEvent.SessionFailed(state.sessionId, "Hermes process did not start."))
+            state.isActive = false
+            return
+        }
         withContext(Dispatchers.IO) {
-            while (state.isActive && isActive) {
-                line = reader.readLine() ?: break
-                try {
-                    val json = JSONObject(line)
-                    // Parse Hermes-specific events
-                    when {
-                        json.has("error") -> {
-                            _events.emit(RuntimeEvent.SessionFailed(state.sessionId, json.getString("error")))
-                        }
-                        json.has("content") -> {
-                            _events.emit(RuntimeEvent.AssistantDelta(state.sessionId, json.getString("content")))
-                        }
-                        json.has("done") -> {
-                            _events.emit(RuntimeEvent.SessionCompleted(state.sessionId))
-                            state.isActive = false
-                        }
-                        else -> {
-                            _events.emit(RuntimeEvent.RuntimeLog(state.sessionId, "hermes", line))
+            val tail = ArrayDeque<String>()
+            try {
+                BufferedReader(InputStreamReader(proc.inputStream)).use { reader ->
+                    var line: String?
+                    while (state.isActive && isActive) {
+                        line = reader.readLine() ?: break
+                        if (line.isNotBlank()) {
+                            tail.addLast(line)
+                            if (tail.size > 20) tail.removeFirst()
+                            _events.emit(RuntimeEvent.AssistantDelta(state.sessionId, line))
                         }
                     }
-                } catch (e: Exception) {
-                    _events.emit(RuntimeEvent.RuntimeLog(state.sessionId, "hermes-raw", line ?: ""))
                 }
+                val exit = proc.waitFor()
+                if (!state.isActive || !isActive) return@withContext
+                if (exit == 0) {
+                    _events.emit(RuntimeEvent.SessionCompleted(state.sessionId))
+                } else {
+                    val detail = tail.takeLast(5).joinToString("\n").take(500)
+                    _events.emit(
+                        RuntimeEvent.SessionFailed(
+                            state.sessionId,
+                            if (detail.isBlank()) "Hermes exited with code $exit." else "Hermes exited ($exit): $detail",
+                        ),
+                    )
+                }
+            } catch (e: Exception) {
+                if (state.isActive) {
+                    Log.e(TAG, "Hermes output failed", e)
+                    _events.emit(RuntimeEvent.SessionFailed(state.sessionId, e.message ?: "Hermes output failed"))
+                }
+            } finally {
+                state.isActive = false
             }
-            reader.close()
         }
     }
 }
