@@ -1,4 +1,5 @@
 import java.util.Properties
+import java.io.File
 import org.gradle.api.DefaultTask
 
 plugins {
@@ -35,7 +36,8 @@ val generatedRuntimeAssets = layout.buildDirectory.dir("generated/runtime-assets
 val prepareBundledAgentAssets = tasks.register<DefaultTask>("prepareBundledAgentAssets") {
     group = "runtime"
     doFirst {
-        if (!runtimeBundleDir.file("pocketdev-agy-arm64-2026.09.1.tar.zst").exists()) {
+        val bundleFile = File(runtimeBundleDir.asFile.get(), "pocketdev-agy-arm64-2026.09.1.tar.zst")
+        if (!bundleFile.exists()) {
             logger.lifecycle("Agent runtime bundle not found, skipping agent asset preparation")
             return@doFirst
         }
@@ -45,9 +47,9 @@ val prepareBundledAgentAssets = tasks.register<DefaultTask>("prepareBundledAgent
 val prepareOfflineRuntimeAssets = tasks.register<DefaultTask>("prepareOfflineRuntimeAssets") {
     group = "runtime"
     doFirst {
-        val core = runtimeBundleDir.file("pocketdev-core-arm64-2026.09.4.tar.zst").exists()
-        val python = runtimeBundleDir.file("pocketdev-python-arm64-2026.09.2.tar.zst").exists()
-        val android = runtimeBundleDir.file("pocketdev-android-arm64-2026.09.1.tar.zst").exists()
+        val core = File(runtimeBundleDir.asFile.get(), "pocketdev-core-arm64-2026.09.4.tar.zst").exists()
+        val python = File(runtimeBundleDir.asFile.get(), "pocketdev-python-arm64-2026.09.2.tar.zst").exists()
+        val android = File(runtimeBundleDir.asFile.get(), "pocketdev-android-arm64-2026.09.1.tar.zst").exists()
         if (!core || !python || !android) {
             logger.lifecycle("Runtime bundles not found, skipping offline asset preparation")
             return@doFirst
