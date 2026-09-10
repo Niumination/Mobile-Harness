@@ -48,8 +48,14 @@
 - **Keputusan 3**: tampilkan juga di daftar Claude (+ Hermes bila Fase C selesai)?
 - Rekomendasi: ya untuk Claude, karena protokolnya memang untuk Claude Code.
 
+## Keputusan owner (2026-09-10, sudah diputuskan)
+
+1. `9router`: HAPUS dari onboarding. ✅ diterapkan di Fase C.
+2. Preset `Hermes` localhost: HAPUS, ganti daftar provider ala setup Hermes desktop/CLI. ✅ diterapkan: daftar Hermes = Anthropic API, OpenCode Zen, Custom API.
+3. `OpenCode Zen`: SUDAH ADA sebagai entri fixed — tinggal sesuaikan. ✅ diterapkan: masuk daftar Hermes; protokol Responses dihormati end-to-end via Fase B.
+
 ## Urutan & kriteria selesai
 
-1. Kumpulkan 3 keputusan owner dulu (jawab singkat di chat).
+1. Keputusan owner sudah masuk (lihat di atas).
 2. Kerjakan A → uji HP → B → uji HP → C+D → uji HP. Satu fase satu commit + satu build CI.
 3. Kriteria akhir: tiap agent (Claude, DSH, Hermes; Antigravity via OAuth) bisa lewat Step 1–3 sampai workspace tanpa error 404, diverifikasi di HP — bukan hanya CI hijau.
