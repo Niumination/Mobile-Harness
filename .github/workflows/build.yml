@@ -146,6 +146,16 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x gradlew
 
+      - name: Download runtime bundles
+        run: |
+          mkdir -p dist/runtime-bundles
+          # Download core runtime bundle
+          curl -L -o dist/runtime-bundles/pocketdev-core-arm64-2026.09.4.tar.zst             https://github.com/Niumination/Mobile-Harness/releases/download/runtime-2026.09.4/pocketdev-core-arm64-2026.09.4.tar.zst || true
+          # Download Python runtime bundle
+          curl -L -o dist/runtime-bundles/pocketdev-python-arm64-2026.09.2.tar.zst             https://github.com/Niumination/Mobile-Harness/releases/download/runtime-2026.09.2/pocketdev-python-arm64-2026.09.2.tar.zst || true
+          # Download Android runtime bundle
+          curl -L -o dist/runtime-bundles/pocketdev-android-arm64-2026.09.1.tar.zst             https://github.com/Niumination/Mobile-Harness/releases/download/runtime-2026.09.1/pocketdev-android-arm64-2026.09.1.tar.zst || true
+
       - name: Build debug APK (Play Protect compatible)
         run: ./gradlew -PplayBuild=true assembleDebug
 
