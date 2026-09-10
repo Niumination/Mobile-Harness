@@ -188,7 +188,7 @@ The `deepseek_harness` branch provided the multi-agent infrastructure. Merge con
 | `c3727ad` | `runtimeBundleDir.asFile.get()` — `asFile` is `File`, not `Provider`, so `.get()` unresolved | 3 jobs gagal kompilasi script |
 | `HEAD` | Kedua task prepare jadi no-op murni tanpa sentuh Gradle Directory API | Tunggu CI |
 | `3d700d2` | `HERMES_PROVIDERS` tak terdefinisi; DshRouteMapper tak exhaustive; HermesRuntimeBridge pakai event/field fiktif | Lanjut: RuntimeInstaller |
-| `HEAD2` | Blok installer Hermes pakai `Proot`/`exec`/konstanta fiktif → tulis ulang ikut pola agy/dsh | Tunggu CI |
+| `1ce7380` | Task generik ambigu (2 flavor); submodule tak di-checkout; path APK salah → task `:app:` per-flavor + submodules recursive + path online | ✅ CI hijau, Release v1.0.3 + APK (62 MB) |
 
 ### Root Causes
 1. `android-actions/setup-android@v3` only accepts `packages` input (space-separated string), not `compile-sdk`, `target-sdk`, etc.
