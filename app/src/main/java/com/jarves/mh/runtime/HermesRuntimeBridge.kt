@@ -9,13 +9,18 @@ import com.jarves.mh.model.ProjectKind
 import com.jarves.mh.model.ProviderProfile
 import com.jarves.mh.model.RuntimeEvent
 import com.jarves.mh.model.ToolRequest
+import java.io.BufferedReader
 import java.io.File
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 /**
@@ -31,7 +36,10 @@ import org.json.JSONObject
  * The bridge sends prompts to Hermes via `hermes chat` command and captures
  * streaming output.
  */
-internal class HermesRuntimeBridge(private val context: Context) : RuntimeBridge {
+internal class HermesRuntimeBridge(
+    private val context: Context,
+    private val secretFor: (ProviderProfile) -> String?,
+) : RuntimeBridge {
     private val _events = MutableSharedFlow<RuntimeEvent>(replay = 0)
     override val events: Flow<RuntimeEvent> get() = _events
 
@@ -51,7 +59,7 @@ internal class HermesRuntimeBridge(private val context: Context) : RuntimeBridge
         val projectId: String,
         val projectSlug: String,
         val provider: ProviderProfile,
-        val process: Process?,
+        var process: Process?,
         var isActive: Boolean = false,
     )
 
@@ -101,7 +109,7 @@ internal class HermesRuntimeBridge(private val context: Context) : RuntimeBridge
                 _events.emit(RuntimeEvent.SessionStarted(sessionId))
                 streamHermesOutput(state)
             } catch (e: Exception) {
-                _events.emit(RuntimeEvent.Error(sessionId, e.message ?: "Failed to start Hermes"))
+                _events.emit(RuntimeEvent.SessionFailed(sessionId, e.message ?: "Failed to start Hermes"))
                 state.isActive = false
             }
         }
@@ -110,8 +118,10 @@ internal class HermesRuntimeBridge(private val context: Context) : RuntimeBridge
     }
 
     override suspend fun respondToApproval(request: ToolRequest, approved: Boolean) {
-        val sessionId = activeSessionId ?: return
-        _events.emit(RuntimeEvent.ApprovalResponse(sessionId, approved))
+        _events.emit(
+            if (approved) RuntimeEvent.ToolApproved(request.sessionId, request.approvalId)
+            else RuntimeEvent.ToolRejected(request.sessionId, request.approvalId),
+        )
     }
 
     override suspend fun stopSession(sessionId: String) {
@@ -119,9 +129,9 @@ internal class HermesRuntimeBridge(private val context: Context) : RuntimeBridge
         try {
             state.process?.destroy()
             state.isActive = false
-            _events.emit(RuntimeEvent.SessionEnded(sessionId))
+            _events.emit(RuntimeEvent.SessionCompleted(sessionId))
         } catch (e: Exception) {
-            _events.emit(RuntimeEvent.Error(sessionId, e.message ?: "Failed to stop session"))
+            _events.emit(RuntimeEvent.SessionFailed(sessionId, e.message ?: "Failed to stop session"))
         } finally {
             sessions.remove(sessionId)
             if (activeSessionId == sessionId) activeSessionId = null
@@ -133,13 +143,12 @@ internal class HermesRuntimeBridge(private val context: Context) : RuntimeBridge
     }
 
     override suspend fun undoLastChanges(projectId: String): Boolean {
-        _events.emit(RuntimeEvent.UndoRequested(projectId))
+        _events.emit(RuntimeEvent.RuntimeLog(activeSessionId ?: projectId, "Undo", "Undo requested for $projectId"))
         return true
     }
 
-    override suspend fun acceptLastChanges(projectId: String): Boolean {
-        _events.emit(RuntimeEvent.AcceptRequested(projectId))
-        return true
+    override suspend fun acceptLastChanges(projectId: String) {
+        _events.emit(RuntimeEvent.RuntimeLog(activeSessionId ?: projectId, "Accept", "Accept requested for $projectId"))
     }
 
     override suspend fun loadPendingChanges(projectId: String): List<ChangeItem> = emptyList()
@@ -221,11 +230,11 @@ internal class HermesRuntimeBridge(private val context: Context) : RuntimeBridge
         }
 
         // Add API key if present
-        if (provider.authToken != null) {
+        secretFor(provider)?.let { token ->
             when (provider.kind.protocol) {
-                com.jarves.mh.model.ProviderProtocol.ANTHROPIC -> env["ANTHROPIC_API_KEY"] = provider.authToken
-                com.jarves.mh.model.ProviderProtocol.OPENAI_CHAT -> env["OPENAI_API_KEY"] = provider.authToken
-                com.jarves.mh.model.ProviderProtocol.ANTHROPIC_GATEWAY -> env["ANTHROPIC_API_KEY"] = provider.authToken
+                com.jarves.mh.model.ProviderProtocol.ANTHROPIC -> env["ANTHROPIC_API_KEY"] = token
+                com.jarves.mh.model.ProviderProtocol.OPENAI_CHAT -> env["OPENAI_API_KEY"] = token
+                com.jarves.mh.model.ProviderProtocol.ANTHROPIC_GATEWAY -> env["ANTHROPIC_API_KEY"] = token
                 else -> {}
             }
         }
@@ -275,26 +284,24 @@ internal class HermesRuntimeBridge(private val context: Context) : RuntimeBridge
                 line = reader.readLine() ?: break
                 try {
                     val json = JSONObject(line)
-                    _events.emit(RuntimeEvent.Stdout(state.sessionId, line))
-
                     // Parse Hermes-specific events
                     when {
                         json.has("error") -> {
-                            _events.emit(RuntimeEvent.Error(state.sessionId, json.getString("error")))
+                            _events.emit(RuntimeEvent.SessionFailed(state.sessionId, json.getString("error")))
                         }
                         json.has("content") -> {
-                            _events.emit(RuntimeEvent.StreamChunk(state.sessionId, json.getString("content")))
+                            _events.emit(RuntimeEvent.AssistantDelta(state.sessionId, json.getString("content")))
                         }
                         json.has("done") -> {
-                            _events.emit(RuntimeEvent.SessionEnded(state.sessionId))
+                            _events.emit(RuntimeEvent.SessionCompleted(state.sessionId))
                             state.isActive = false
                         }
                         else -> {
-                            _events.emit(RuntimeEvent.Stdout(state.sessionId, line))
+                            _events.emit(RuntimeEvent.RuntimeLog(state.sessionId, "hermes", line))
                         }
                     }
                 } catch (e: Exception) {
-                    _events.emit(RuntimeEvent.Stdout(state.sessionId, line ?: ""))
+                    _events.emit(RuntimeEvent.RuntimeLog(state.sessionId, "hermes-raw", line ?: ""))
                 }
             }
             reader.close()

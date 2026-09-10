@@ -93,6 +93,15 @@ val DEEPSEEK_HARNESS_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.CUSTOM,
 )
 
+/** Provider kinds usable with [AgentKind.HERMES]. Hermes talks OpenAI-compatible
+ * endpoints and Anthropic-compatible gateways. */
+val HERMES_PROVIDERS: Set<ProviderKind> = setOf(
+    ProviderKind.HERMES,
+    ProviderKind.NINE_ROUTER,
+    ProviderKind.AGENTROUTER,
+    ProviderKind.CUSTOM,
+)
+
 /** Provider choices shown for the selected coding agent. */
 fun providersForAgent(agent: AgentKind): List<ProviderKind> = when (agent) {
     AgentKind.DEEPSEEK_HARNESS -> ProviderKind.entries.filter { it in DEEPSEEK_HARNESS_PROVIDERS }
