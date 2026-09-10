@@ -32,7 +32,7 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           packages: "cmdline-tools;latest platforms;android-36 platforms;android-28 build-tools;36.0.0 build-tools;28.0.3 ndk;26.1.10909125"
 
@@ -67,7 +67,7 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           packages: "cmdline-tools;latest platforms;android-36 platforms;android-28 build-tools;36.0.0 build-tools;28.0.3 ndk;26.1.10909125"
 
@@ -111,7 +111,7 @@ jobs:
           java-version: ${{ env.JAVA_VERSION }}
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           packages: "cmdline-tools;latest platforms;android-36 platforms;android-28 build-tools;36.0.0 build-tools;28.0.3 ndk;26.1.10909125"
 
