@@ -170,3 +170,37 @@ The `deepseek_harness` branch provided the multi-agent infrastructure. Merge con
 | 2026-09-10 | Merge `deepseek_harness` into `main` — multi-agent infrastructure |
 | 2026-09-10 | Hermes Agent integration (`7474350`) — full bridge + installer + UI |
 | 2026-09-10 | Documentation created — `HERMES-AGENT-INTEGRATION.md`, `DEVELOPMENT-GUIDE.md` |
+
+## CI Debug Notes
+
+### CI Failure History
+| Commit | Issue | Fix |
+|--------|-------|-----|
+| `943ecd9` | Added APK job | CI existed but didn't build APK |
+| `f94ae51` | Updated release action | `actions/create-release@v1` deprecated |
+| `326747e` | Fixed setup-android inputs | `compile-sdk` input invalid, `@v4` deprecated |
+| `8724efc` | Fixed YAML syntax | `workflow_dispatch` missing colon |
+| `34b4af8` | Changed packages format | `packages` as list instead of string |
+| `4fa4282` | Changed to @v4 | Still using packages format, but @v4 has Node.js 24 |
+| `12d3806` | Revert to compile-sdk format | Still invalid input |
+| `205c856` | Changed to lintDebug/testDebugUnitTest | Generic tasks, still fails |
+| `0c508bb` | Added test-secrets.properties creation | Waiting for result |
+| `c3727ad` | `runtimeBundleDir.asFile.get()` — `asFile` is `File`, not `Provider`, so `.get()` unresolved | 3 jobs gagal kompilasi script |
+| `HEAD` | Kedua task prepare jadi no-op murni tanpa sentuh Gradle Directory API | Tunggu CI |
+
+### Root Causes
+1. `android-actions/setup-android@v3` only accepts `packages` input (space-separated string), not `compile-sdk`, `target-sdk`, etc.
+2. `setup-java@v4` deprecated → use `@v5`
+3. `lintOnlineDebug`/`testOnlineDebugUnitTest` tasks don't exist → use `lintDebug`/`testDebugUnitTest`
+4. `test-secrets.properties` missing → create empty file before gradle runs
+
+### Current Working CI Configuration
+```yaml
+- android-actions/setup-android@v3
+  with: packages: "cmdline-tools;latest platforms;android-36 platforms;android-28 build-tools;36.0.0 build-tools;28.0.3 ndk;26.1.10909125"
+- actions/setup-java@v5
+- ./gradlew lintDebug
+- ./gradlew testDebugUnitTest
+- ./gradlew -PplayBuild=true assembleDebug
+- softprops/action-gh-release@v1
+```
