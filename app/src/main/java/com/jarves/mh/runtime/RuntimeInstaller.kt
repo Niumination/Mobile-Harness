@@ -68,6 +68,7 @@ class RuntimeInstaller(private val context: Context) {
     private val devStacksFile = File(rootfs, ".pocket-dev-stacks.json")
     private val dshMarker = File(rootfs, ".pocket-dsh-version")
     private val agyMarker = File(rootfs, ".pocket-agy-version")
+    private val hermesMarker = File(rootfs, ".pocket-hermes-version")
     private val githubCliMarker = File(rootfs, ".pocket-github-cli-version")
     private val dshAndroidCompatibilityMarker = File(rootfs, ".pocket-dsh-android-compat-version")
     private val macosMetadataRepairMarker = File(rootfs, ".pocket-macos-metadata-repair")
@@ -310,21 +311,26 @@ class RuntimeInstaller(private val context: Context) {
      * Installs Hermes Agent via pip in the Termux/Linux runtime.
      */
     private suspend fun ensureHermesInstalled(
-        proot: Proot,
-        progressOffset: Float,
+        proot: File,
+        fraction: Float,
         onProgress: suspend (RuntimeInstallProgress) -> Unit,
     ) {
         if (isAgentInstalled(com.jarves.mh.model.AgentKind.HERMES)) return
 
-        onProgress(RuntimeInstallProgress("Installing Hermes Agent", progressOffset))
+        onProgress(RuntimeInstallProgress("Installing Hermes Agent", fraction))
 
-        proot.exec(arrayOf("bash", "-c", "pip install hermes-agent 2>&1 || uvx hermes --install")) { line ->
-            onProgress(RuntimeInstallProgress("Hermes: $line", progressOffset + 0.01f))
-        }
-
-        val hermesBin = File(rootfs, HERMES_GUEST_PATH)
-        if (hermesBin.canExecute()) {
-            hermesMarker.writeText("installed")
+        val install = process(
+            proot = proot,
+            rootfs = rootfs,
+            workspace = File(rootfs, "root"),
+            environment = emptyMap(),
+            guestCommand = listOf("/usr/bin/env", "bash", "-lc", "pip install hermes-agent"),
+        )
+        check(install.waitFor() == 0) { "Hermes Agent pip install failed" }
+        verifyGuest(proot, "$HERMES_GUEST_PATH --version", "Hermes Agent verification failed")
+        hermesMarker.writeText(HERMES_VERSION)
+        require(isAgentInstalled(com.jarves.mh.model.AgentKind.HERMES)) {
+            "Hermes Agent installation is incomplete"
         }
     }
 
@@ -440,6 +446,7 @@ class RuntimeInstaller(private val context: Context) {
             com.jarves.mh.model.AgentKind.CLAUDE_CODE -> updateClaude(runtime, expectedVersion, onProgress)
             com.jarves.mh.model.AgentKind.DEEPSEEK_HARNESS -> updateDsh(runtime, expectedVersion, onProgress)
             com.jarves.mh.model.AgentKind.ANTIGRAVITY -> updateAgy(runtime, expectedVersion, onProgress)
+            com.jarves.mh.model.AgentKind.HERMES -> updateHermes(runtime, expectedVersion, onProgress)
         }
         onProgress(RuntimeInstallProgress("${agent.title} $expectedVersion is ready", 1f, event = RuntimeInstallEvent.COMPLETED))
     }
@@ -501,6 +508,25 @@ class RuntimeInstaller(private val context: Context) {
         check(found) { "Antigravity update archive is incomplete" }
         verifyGuest(runtime.proot, "$AGY_GUEST_PATH --version", "Antigravity update verification failed")
         agyMarker.writeText(latest)
+    }
+
+    private suspend fun updateHermes(
+        runtime: InstalledRuntime,
+        expectedVersion: String,
+        onProgress: suspend (RuntimeInstallProgress) -> Unit,
+    ) {
+        check(expectedVersion.isNotBlank()) { "Hermes Agent version is required" }
+        runGuestCommand(
+            proot = runtime.proot,
+            command = "set -e; pip install --upgrade hermes-agent",
+            displayCommand = "Updating Hermes Agent",
+            fraction = 0.5f,
+            timeoutMs = 600_000L,
+            onProgress = onProgress,
+            failureMessage = "Hermes Agent update failed",
+        )
+        verifyGuest(runtime.proot, "$HERMES_GUEST_PATH --version", "Hermes Agent update verification failed")
+        hermesMarker.writeText(expectedVersion)
     }
 
     private suspend fun updateDsh(
@@ -1691,6 +1717,8 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
 
     companion object {
         const val AGY_GUEST_PATH = "/root/.local/bin/agy"
+        const val HERMES_GUEST_PATH = "/root/.local/bin/hermes"
+        private const val HERMES_VERSION = "0.1.0"
         const val GITHUB_CLI_GUEST_PATH = "/root/.local/bin/gh"
         private const val AGY_VERSION = "1.1.27"
         private const val AGY_RELEASE_URL = "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.27-5211191891591168/linux-arm/cli_linux_arm64.tar.gz"
