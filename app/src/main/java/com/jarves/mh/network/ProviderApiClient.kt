@@ -73,7 +73,9 @@ class ProviderApiClient {
             response.code == 404 -> ConnectionValidation.Failure("The API endpoint was not found. Check the base URL.")
             response.code == 400 && response.body.contains("model", ignoreCase = true) ->
                 ConnectionValidation.Failure("The provider did not accept model '$model'. Choose a listed model or check its exact name.")
-            response.code > 0 -> ConnectionValidation.Failure(friendlyHttpError(response.code))
+            response.code > 0 -> ConnectionValidation.Failure(
+                friendlyHttpError(response.code) + serverErrorDetail(response.body),
+            )
             response.error?.contains("timed out", ignoreCase = true) == true ->
                 ConnectionValidation.Failure("Connection timed out after 10 seconds.")
             else -> ConnectionValidation.Failure(response.error ?: "Could not connect to the provider.")
@@ -157,6 +159,21 @@ class ProviderApiClient {
         429 -> "The provider rate limit was reached. Wait a moment and try again."
         in 500..599 -> "The provider is temporarily unavailable (HTTP $code)."
         else -> "The provider returned HTTP $code. Check the URL and account access."
+    }
+
+    /**
+     * Short server-provided reason for an HTTP failure (e.g. `{"error":{"message":...}}`),
+     * truncated to one line. Never includes the API key — error bodies carry no secrets.
+     */
+    private fun serverErrorDetail(body: String): String {
+        if (body.isBlank()) return ""
+        val message = runCatching {
+            val root = JSONObject(body)
+            val nested = root.optJSONObject("error")?.optString("message").orEmpty()
+            (nested.ifBlank { root.optString("message") }.ifBlank { body }).trim()
+        }.getOrElse { body.trim() }
+        val singleLine = message.replace(Regex("\\s+"), " ").take(180).trim()
+        return if (singleLine.isBlank()) "" else " Server said: $singleLine"
     }
 
     private data class HttpResult(val code: Int, val body: String, val error: String? = null)

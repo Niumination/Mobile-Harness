@@ -36,7 +36,7 @@ enum class ProviderKind(
     HUANCHENG("Huancheng", "Anthropic-compatible", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.hcnsec.cn/v1", "auto"),
     NINE_ROUTER("9router", "Local model router", ProviderProtocol.OPENAI_CHAT, "http://localhost:20128/v1", "explabs/gpt-5.4-mini"),
     HERMES("Hermes", "Hermes Agent", ProviderProtocol.OPENAI_CHAT, "http://localhost:20128/v1", "hermes"),
-    CUSTOM("Custom API", "Anthropic-compatible endpoint", ProviderProtocol.ANTHROPIC_GATEWAY, "", "", true),
+    CUSTOM("Custom API", "Any OpenAI or Anthropic endpoint", ProviderProtocol.ANTHROPIC_GATEWAY, "", "", true),
 }
 
 /**
