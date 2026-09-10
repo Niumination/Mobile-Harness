@@ -93,12 +93,12 @@ val DEEPSEEK_HARNESS_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.CUSTOM,
 )
 
-/** Provider kinds usable with [AgentKind.HERMES]. Hermes talks OpenAI-compatible
- * endpoints and Anthropic-compatible gateways. */
+/** Provider kinds usable with [AgentKind.HERMES]. Hermes talks to real model
+ * endpoints — no localhost presets. Pick the endpoint type, then enter
+ * its base URL, key, and wire protocol. */
 val HERMES_PROVIDERS: Set<ProviderKind> = setOf(
-    ProviderKind.HERMES,
-    ProviderKind.NINE_ROUTER,
-    ProviderKind.AGENTROUTER,
+    ProviderKind.ANTHROPIC,
+    ProviderKind.OPENCODE_ZEN,
     ProviderKind.CUSTOM,
 )
 
