@@ -33,7 +33,13 @@ val runtimeBundleDir = rootProject.layout.projectDirectory.dir("dist/runtime-bun
 val generatedRuntimeAssets = layout.buildDirectory.dir("generated/runtime-assets")
 
 val prepareBundledAgentAssets = tasks.register<Sync>("prepareBundledAgentAssets") {
-    onlyIf { runtimeBundleDir.file("pocketdev-agy-arm64-2026.09.1.tar.zst").exists() }
+    group = "runtime"
+    doFirst {
+        if (!runtimeBundleDir.file("pocketdev-agy-arm64-2026.09.1.tar.zst").exists()) {
+            logger.lifecycle("Agent runtime bundle not found, skipping asset preparation")
+            return@doFirst
+        }
+    }
     from(runtimeBundleDir.file("pocketdev-agy-arm64-2026.09.1.tar.zst"))
     into(generatedRuntimeAssets.map { it.dir("shared/runtime") })
 }
