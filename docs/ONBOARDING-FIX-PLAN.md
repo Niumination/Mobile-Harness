@@ -71,6 +71,22 @@
   `INSTALL_FAILED_UPDATE_INCOMPATIBLE`; update sideload wajib uninstall dulu.
   Opsi perbaikan: keystore debug permanen di CI (perlu keputusan owner).
 
+## Temuan uji ADB lanjutan (2026-09-11, commit `852b7ee`)
+
+- Endpoint Go (`/zen/go/v1`) + key langganan Go → validasi awal 400:
+  **"Request is missing x-opencode-session and cannot be routed efficiently"**.
+  Diperbaiki: `AppPreferences.opencodeSessionId` (UUID stabil per install) +
+  header `x-opencode-session` di `ProviderApiClient.request` bila URL
+  mengandung `/zen/go`. Preseden: klien pi melakukan hal yang sama.
+- Hasil: validasi `deepseek-v4-flash` via Go LOLOS; onboarding Step 1–3 selesai penuh.
+- GAP BARU (belum diperbaiki): chat Hermes via Go stuck di "Think" tanpa
+  respons/error. `buildHermesCommand` hanya bercabang nyata untuk
+  `OPENAI_CHAT` (Responses jatuh ke `else`); `buildHermesEnvironment` untuk
+  Responses hanya set `HERMES_PROVIDER` (tanpa URL/model/key);
+  `x-opencode-session` belum ada di jalur chat. Rencana: petakan Responses
+  di command+env, teruskan session ID (env/flag CLI atau gateway lokal ala
+  Claude), tampilkan error CLI yang kini sunyi.
+
 ## Urutan & kriteria selesai
 
 1. Keputusan owner sudah masuk (lihat di atas).
