@@ -208,7 +208,32 @@ Launch the application and follow the interactive setup wizard:
 2. Open the **AI Workspace** and describe what you want to build.
 3. Watch the agent inspect files, draft code, run builds, and launch local web previews.
 
-<br />
+### 4. Verified on Real Hardware
+Infinix X6873 (Android 16, arm64) — full log: [docs/DEVICE-TEST-2026-09-11.md](docs/DEVICE-TEST-2026-09-11.md)
+
+<table>
+  <tr>
+    <th width="33%" align="center">Agent Onboarding</th>
+    <th width="33%" align="center">Hermes Providers</th>
+    <th width="33%" align="center">Antigravity at Work</th>
+  </tr>
+  <tr>
+    <td align="center" valign="top">
+      <img src="assets/readme/real-onboarding-agents.png" alt="Agent picker on device" width="100%" />
+    </td>
+    <td align="center" valign="top">
+      <img src="assets/readme/real-hermes-providers.png" alt="Hermes provider list on device" width="100%" />
+    </td>
+    <td align="center" valign="top">
+      <img src="assets/readme/real-antigravity-working.png" alt="Antigravity agent working on device" width="100%" />
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Claude badge, 4 agents, Core runtime.</sub></td>
+    <td align="center"><sub>Anthropic, OpenCode Zen, Custom API.</sub></td>
+    <td align="center"><sub>Real tool loop: Think, List, Bash, npm.</sub></td>
+  </tr>
+</table>
 
 ## Model Providers
 
