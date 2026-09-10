@@ -1,5 +1,5 @@
 import java.util.Properties
-import org.gradle.api.tasks.Sync
+import org.gradle.api.DefaultTask
 
 plugins {
     id("com.android.application")
@@ -32,26 +32,27 @@ val appUpdateManifestUrl =
 val runtimeBundleDir = rootProject.layout.projectDirectory.dir("dist/runtime-bundles")
 val generatedRuntimeAssets = layout.buildDirectory.dir("generated/runtime-assets")
 
-val prepareBundledAgentAssets = tasks.register<Sync>("prepareBundledAgentAssets") {
+val prepareBundledAgentAssets = tasks.register<DefaultTask>("prepareBundledAgentAssets") {
     group = "runtime"
     doFirst {
         if (!runtimeBundleDir.file("pocketdev-agy-arm64-2026.09.1.tar.zst").exists()) {
-            logger.lifecycle("Agent runtime bundle not found, skipping asset preparation")
+            logger.lifecycle("Agent runtime bundle not found, skipping agent asset preparation")
             return@doFirst
         }
     }
-    from(runtimeBundleDir.file("pocketdev-agy-arm64-2026.09.1.tar.zst"))
-    into(generatedRuntimeAssets.map { it.dir("shared/runtime") })
 }
 
-val prepareOfflineRuntimeAssets = tasks.register<Sync>("prepareOfflineRuntimeAssets") {
-    from(
-        runtimeBundleDir.file("pocketdev-core-arm64-2026.09.4.tar.zst"),
-        runtimeBundleDir.file("pocketdev-python-arm64-2026.09.2.tar.zst"),
-        runtimeBundleDir.file("pocketdev-android-arm64-2026.09.1.tar.zst"),
-        runtimeBundleDir.file("pocketdev-dsh-arm64-2026.09.1.tar.zst"),
-    )
-    into(generatedRuntimeAssets.map { it.dir("offline/runtime") })
+val prepareOfflineRuntimeAssets = tasks.register<DefaultTask>("prepareOfflineRuntimeAssets") {
+    group = "runtime"
+    doFirst {
+        val core = runtimeBundleDir.file("pocketdev-core-arm64-2026.09.4.tar.zst").exists()
+        val python = runtimeBundleDir.file("pocketdev-python-arm64-2026.09.2.tar.zst").exists()
+        val android = runtimeBundleDir.file("pocketdev-android-arm64-2026.09.1.tar.zst").exists()
+        if (!core || !python || !android) {
+            logger.lifecycle("Runtime bundles not found, skipping offline asset preparation")
+            return@doFirst
+        }
+    }
 }
 
 fun buildConfigString(value: String): String =
