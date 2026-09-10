@@ -165,6 +165,8 @@ Mobile Harness unites modern **Jetpack Compose UI** with a self-contained **Ubun
 
 Get up and running in 3 guided steps:
 
+> **Play Protect Note:** Default debug APKs are blocked on Android 13+. Use `./gradlew -PplayBuild=true assembleDebug` for a compatible APK installable via file manager — no ADB or upload keystore needed.
+
 ### 1. Download & Install
 Download the latest signed release APK from [GitHub Releases](https://github.com/techjarves/Mobile-Harness/releases/latest).
 

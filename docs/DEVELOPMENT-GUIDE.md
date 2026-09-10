@@ -13,6 +13,8 @@ This guide covers all aspects of developing Mobile Harness, from architecture ov
 
 Mobile Harness is an Android application that provides a full coding environment on mobile devices. It bridges native Android Jetpack Compose UI to an isolated PRoot Linux execution layer.
 
+> ⚠️ **Play Protect Notice:** Default debug builds use `targetSdk 28` and are blocked by Play Protect on Android 13+. Use `./gradlew -PplayBuild=true assembleDebug` to build a compatible APK without ADB or upload keystore.
+
 ### Core Architecture
 
 ```
