@@ -54,6 +54,23 @@
 2. Preset `Hermes` localhost: HAPUS, ganti daftar provider ala setup Hermes desktop/CLI. ✅ diterapkan: daftar Hermes = Anthropic API, OpenCode Zen, Custom API.
 3. `OpenCode Zen`: SUDAH ADA sebagai entri fixed — tinggal sesuaikan. ✅ diterapkan: masuk daftar Hermes; protokol Responses dihormati end-to-end via Fase B.
 
+## Temuan uji ADB di HP (2026-09-11, Infinix X6873)
+
+- Step 1–2 terverifikasi visual: badge "Included in Core", daftar Hermes =
+  Anthropic API / OpenCode Zen / Custom API, subtitle Custom netral.
+- Validasi Zen free-tier (`muse-spark-1.3-contributor-free`, protokol
+  `openai-responses`) → HTTP 400 dengan pesan server:
+  **"Error from provider (Console): OpenCode's free tier can only be used in OpenCode"**.
+  Artinya model free-tier Zen dikunci untuk aplikasi OpenCode sendiri —
+  klien pihak ketiga (termasuk Mobile-Harness) SELALU ditolak. Bukan bug aplikasi.
+- Konsekuensi: uji validasi butuh Zen API key berbayar/langganan Go.
+  Model Go/berbayar yang lapor "API key was rejected" = key yang dipakai
+  tidak punya billing/langganan — ganti key, bukan kode.
+- Temuan samping: tiap build CI punya signature debug berbeda (keystore
+  dibuat baru tiap runner) → install `-r` selalu
+  `INSTALL_FAILED_UPDATE_INCOMPATIBLE`; update sideload wajib uninstall dulu.
+  Opsi perbaikan: keystore debug permanen di CI (perlu keputusan owner).
+
 ## Urutan & kriteria selesai
 
 1. Keputusan owner sudah masuk (lihat di atas).
