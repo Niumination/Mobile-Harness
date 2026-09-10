@@ -138,6 +138,24 @@ The `deepseek_harness` branch provided the multi-agent infrastructure. Merge con
 | [DEVELOPMENT-GUIDE.md](docs/DEVELOPMENT-GUIDE.md) | Complete development guide |
 | [PLAY_STORE_CHECKLIST.md](docs/PLAY_STORE_CHECKLIST.md) | Google Play release checklist |
 | [update-testing.md](docs/update-testing.md) | Testing in-app updater |
+| — | — |
+
+## CI Notes
+
+### GitHub Actions CI (`.github/workflows/build.yml`)
+- **3 jobs**: Lint Check, Unit Tests, Build & Release APK
+- **Key commands**:
+  - `./gradlew lintDebug` — lint all flavors
+  - `./gradlew testDebugUnitTest` — run unit tests
+  - `./gradlew -PplayBuild=true assembleDebug` — build Play Protect-compatible APK
+- **Android SDK setup**: `android-actions/setup-android@v3` with `packages` input (space-separated string)
+- **Java**: `actions/setup-java@v5` (not v4)
+- **Release**: `softprops/action-gh-release@v1` automatically creates GitHub Release with APK
+
+### Known Issues & Fixes
+- `lintOnlineDebug`/`testOnlineDebugUnitTest` don't exist → use generic `lintDebug`/`testDebugUnitTest`
+- `android-actions/setup-android@v3` doesn't accept `compile-sdk`/`target-sdk`/`min-sdk`/`ndk-version` → use `packages: "cmdline-tools;latest platforms;android-36 ..."`
+- `setup-java@v4` deprecated → use `@v5`
 
 ---
 
@@ -145,6 +163,9 @@ The `deepseek_harness` branch provided the multi-agent infrastructure. Merge con
 
 | Date | Event |
 |------|-------|
+| 2026-09-10 | CI fix: setup-android@v3 uses `packages` input (space-separated string), not compile-sdk/target-sdk/min-sdk |
+| 2026-09-10 | CI fix: use `lintDebug`/`testDebugUnitTest` instead of `lintOnlineDebug`/`testOnlineDebugUnitTest` |
+| 2026-09-10 | CI fix: `setup-java@v4` → `@v5` to reduce Node.js 20 deprecation warnings |
 | 2026-09-10 | Fork takeover complete — `origin` → `Niumination/Mobile-Harness` |
 | 2026-09-10 | Merge `deepseek_harness` into `main` — multi-agent infrastructure |
 | 2026-09-10 | Hermes Agent integration (`7474350`) — full bridge + installer + UI |
