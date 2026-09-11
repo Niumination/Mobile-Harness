@@ -1090,7 +1090,7 @@ private fun ConnectionSettings(
     }
     Text("Model", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
     OutlinedTextField(model, onModel, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    OutlinedButton(onClick = onModels, enabled = baseUrl.isNotBlank() && apiKey.isNotBlank() && !isDiscovering, modifier = Modifier.fillMaxWidth().height(50.dp)) {
+    OutlinedButton(onClick = onModels, enabled = baseUrl.isNotBlank() && (apiKey.isNotBlank() || selectedKind == ProviderKind.OPENCODE_FREE) && !isDiscovering, modifier = Modifier.fillMaxWidth().height(50.dp)) {
         if (isDiscovering) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
         else Icon(if (models.isEmpty()) Icons.Default.Search else Icons.Default.KeyboardArrowDown, null, Modifier.size(18.dp))
         Spacer(Modifier.width(7.dp))
@@ -1173,7 +1173,7 @@ private fun ConnectionSettings(
     }
     Button(
         onClick = onValidate,
-        enabled = baseUrl.isNotBlank() && model.isNotBlank() && apiKey.isNotBlank() && !isDiscovering && !isValidating,
+        enabled = baseUrl.isNotBlank() && model.isNotBlank() && (apiKey.isNotBlank() || selectedKind == ProviderKind.OPENCODE_FREE) && !isDiscovering && !isValidating,
         modifier = Modifier.fillMaxWidth().height(52.dp),
     ) {
         if (isValidating) {

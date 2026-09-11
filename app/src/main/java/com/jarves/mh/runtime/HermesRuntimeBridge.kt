@@ -91,7 +91,8 @@ internal class HermesRuntimeBridge(
                     return@withContext
                 }
                 val token = secretFor(provider)
-                if (token.isNullOrBlank()) {
+                val mapped = mapProvider(provider)
+                if (mapped?.keyEnv != null && token.isNullOrBlank()) {
                     _events.emit(
                         RuntimeEvent.SessionFailed(sessionId, "API key is missing. Reconnect the provider in Settings."),
                     )
@@ -192,10 +193,13 @@ internal class HermesRuntimeBridge(
         )
     }
 
-    /** Built-in Hermes provider name + key env for a known endpoint host. */
-    private data class HermesProvider(val name: String, val keyEnv: String)
+    /** Built-in Hermes provider name + key env for a known endpoint host. Null keyEnv = keyless. */
+    private data class HermesProvider(val name: String, val keyEnv: String?)
 
     private fun mapProvider(provider: ProviderProfile): HermesProvider? {
+        if (provider.kind == com.jarves.mh.model.ProviderKind.OPENCODE_FREE) {
+            return HermesProvider("opencode-free", null)
+        }
         val base = provider.resolvedBaseUrl.lowercase()
         return when {
             "opencode.ai/zen/go" in base -> HermesProvider("opencode-go", "OPENCODE_GO_API_KEY")
@@ -214,7 +218,9 @@ internal class HermesRuntimeBridge(
     private fun buildHermesEnvironment(provider: ProviderProfile, token: String): Map<String, String> {
         val env = mutableMapOf<String, String>()
         env["DISABLE_AUTOUPDATER"] = "1"
-        mapProvider(provider)?.let { env[it.keyEnv] = token }
+        mapProvider(provider)?.let { mapped ->
+            if (mapped.keyEnv != null && token.isNotBlank()) env[mapped.keyEnv] = token
+        }
         return env
     }
 

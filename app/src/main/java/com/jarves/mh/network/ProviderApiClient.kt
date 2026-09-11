@@ -26,15 +26,16 @@ class ProviderApiClient {
         apiKey: String,
         protocol: ProviderProtocol,
         sessionId: String = "",
+        keyless: Boolean = false,
     ): ModelDiscoveryResult = withContext(Dispatchers.IO) {
-        if (baseUrl.isBlank() || apiKey.isBlank()) {
+        if (baseUrl.isBlank() || (!keyless && apiKey.isBlank())) {
             return@withContext ModelDiscoveryResult.Failure("Enter a base URL and API key first.")
         }
 
         var authError = false
         var lastMessage = "This provider did not expose a model list. You can enter a custom model name."
         for (endpoint in modelEndpoints(baseUrl, protocol)) {
-            val response = request(endpoint, "GET", apiKey, protocol = protocol, sessionId = sessionId)
+            val response = request(endpoint, "GET", apiKey, protocol = protocol, sessionId = sessionId, keyless = keyless)
             when {
                 response.code == 401 || response.code == 403 -> authError = true
                 response.code in 200..299 -> {
@@ -56,13 +57,14 @@ class ProviderApiClient {
         protocol: ProviderProtocol,
         discoveredModels: List<DiscoveredModel>,
         sessionId: String = "",
+        keyless: Boolean = false,
     ): ConnectionValidation = withContext(Dispatchers.IO) {
-        if (baseUrl.isBlank() || model.isBlank() || apiKey.isBlank()) {
+        if (baseUrl.isBlank() || model.isBlank() || (!keyless && apiKey.isBlank())) {
             return@withContext ConnectionValidation.Failure("Base URL, model, and API key are required.")
         }
         val endpoint = messagesEndpoint(baseUrl, protocol)
         val body = validationBody(model, protocol)
-        val response = request(endpoint, "POST", apiKey, body, protocol, connectTimeoutMs = 8_000, readTimeoutMs = 10_000, sessionId = sessionId)
+        val response = request(endpoint, "POST", apiKey, body, protocol, connectTimeoutMs = 8_000, readTimeoutMs = 10_000, sessionId = sessionId, keyless = keyless)
         when {
             response.code in 200..299 -> ConnectionValidation.Success(
                 if (protocol == ProviderProtocol.ANTHROPIC || protocol == ProviderProtocol.ANTHROPIC_GATEWAY || protocol == ProviderProtocol.OPENROUTER) {
@@ -93,6 +95,7 @@ class ProviderApiClient {
         connectTimeoutMs: Int = 12_000,
         readTimeoutMs: Int = 20_000,
         sessionId: String = "",
+        keyless: Boolean = false,
     ): HttpResult {
         return runCatching {
             val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
@@ -101,14 +104,20 @@ class ProviderApiClient {
                 readTimeout = readTimeoutMs
                 setRequestProperty("Accept", "application/json")
                 setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("Authorization", "Bearer $apiKey")
+                // Keyless relays (OpenCode free tier) 401 any bearer they do
+                // not recognize — omit the header entirely instead of sending
+                // an empty or placeholder credential.
+                if (!keyless) {
+                    setRequestProperty("Authorization", "Bearer $apiKey")
+                }
                 if (protocol != ProviderProtocol.OPENROUTER && protocol != ProviderProtocol.OPENAI_CHAT && protocol != ProviderProtocol.OPENAI_RESPONSES) {
                     setRequestProperty("x-api-key", apiKey)
                     setRequestProperty("anthropic-version", "2023-06-01")
                 }
-                // OpenCode Go requires a stable session ID for routing/prompt-caching.
-                // Without it the gateway answers 400 "missing x-opencode-session".
-                if (sessionId.isNotBlank() && endpoint.contains("/zen/go")) {
+                // OpenCode pins requests sharing a session value to one backend
+                // (warm prompt cache) and its free tier rejects requests without
+                // one (400 MissingSessionID). Send it on every opencode.ai host.
+                if (sessionId.isNotBlank() && "opencode.ai" in endpoint) {
                     setRequestProperty("x-opencode-session", sessionId)
                 }
                 if (body != null) doOutput = true

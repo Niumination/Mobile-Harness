@@ -178,6 +178,7 @@ The `deepseek_harness` branch provided the multi-agent infrastructure. Merge con
 | 2026-09-10 | Onboarding Fase A–C: badge Claude, skip Step 2 Antigravity, effectiveProtocol custom end-to-end, daftar Hermes tanpa localhost |
 | 2026-09-12 | AI connection: protocol picker dibuka untuk semua Custom, kartu Terminal sign-in Nous di connection Hermes |
 | 2026-09-12 | Zen endpoint fix: default model OpenCode Zen → muse-spark-1.3 (deepseek hanya dilayani /chat/completions), hint rute famili model untuk custom Zen |
+| 2026-09-12 | OpenCode Free keyless: preset tanpa key + header x-opencode-session di semua host opencode.ai (tanpa itu 400 MissingSessionID), PATH terminal mencakup /root/.local/bin |
 
 ## CI Debug Notes
 

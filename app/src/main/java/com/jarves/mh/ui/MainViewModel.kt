@@ -1548,7 +1548,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     suspend fun discoverModels(profile: ProviderProfile, secret: String): ModelDiscoveryResult {
         val key = secret.ifBlank { vault.get(profile.kind.name).orEmpty() }
-        return providerApi.discoverModels(profile.baseUrl, key, profile.effectiveProtocol(), preferences.opencodeSessionId)
+        return providerApi.discoverModels(profile.baseUrl, key, profile.effectiveProtocol(), preferences.opencodeSessionId, keyless = profile.kind == ProviderKind.OPENCODE_FREE)
     }
 
     suspend fun validateProvider(
@@ -1557,7 +1557,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         models: List<com.jarves.mh.network.DiscoveredModel>,
     ): ConnectionValidation {
         val key = secret.ifBlank { vault.get(profile.kind.name).orEmpty() }
-        return providerApi.validate(profile.baseUrl, profile.model, key, profile.effectiveProtocol(), models, preferences.opencodeSessionId)
+        return providerApi.validate(profile.baseUrl, profile.model, key, profile.effectiveProtocol(), models, preferences.opencodeSessionId, keyless = profile.kind == ProviderKind.OPENCODE_FREE)
     }
 
     fun pingApi() {
@@ -1577,7 +1577,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(apiPingStatus = ApiPingStatus.PINGING, apiPingMessage = "Sending a minimal test request…") }
         viewModelScope.launch {
             val key = vault.get(profile.kind.name).orEmpty()
-            val result = providerApi.validate(profile.baseUrl, profile.model, key, profile.effectiveProtocol(), emptyList(), preferences.opencodeSessionId)
+            val result = providerApi.validate(profile.baseUrl, profile.model, key, profile.effectiveProtocol(), emptyList(), preferences.opencodeSessionId, keyless = profile.kind == ProviderKind.OPENCODE_FREE)
             when (result) {
                 is ConnectionValidation.Success -> _state.update {
                     it.copy(apiPingStatus = ApiPingStatus.OK, apiPingMessage = "API responded successfully")

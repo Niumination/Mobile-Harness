@@ -32,6 +32,15 @@ enum class ProviderKind(
         fixedBaseUrl = true,
         fixedProtocol = true,
     ),
+    OPENCODE_FREE(
+        "OpenCode Free",
+        "Free tier · no key, no account",
+        ProviderProtocol.OPENAI_CHAT,
+        "https://opencode.ai/zen/v1",
+        "mimo-v2.5-free",
+        fixedBaseUrl = true,
+        fixedProtocol = true,
+    ),
     AGENTROUTER("AgentRouter", "Multi-model gateway", ProviderProtocol.OPENAI_CHAT, "https://agentrouter.org/v1", "auto"),
     HUANCHENG("Huancheng", "Anthropic-compatible", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.hcnsec.cn/v1", "auto"),
     NINE_ROUTER("9router", "Local model router", ProviderProtocol.OPENAI_CHAT, "http://localhost:20128/v1", "explabs/gpt-5.4-mini"),
@@ -90,6 +99,7 @@ val DEEPSEEK_HARNESS_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.LLM_ROUTER,
     ProviderKind.KIMI,
     ProviderKind.OPENCODE_ZEN,
+    ProviderKind.OPENCODE_FREE,
     ProviderKind.CUSTOM,
 )
 
@@ -99,6 +109,7 @@ val DEEPSEEK_HARNESS_PROVIDERS: Set<ProviderKind> = setOf(
 val HERMES_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.ANTHROPIC,
     ProviderKind.OPENCODE_ZEN,
+    ProviderKind.OPENCODE_FREE,
     ProviderKind.CUSTOM,
 )
 
