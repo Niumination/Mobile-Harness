@@ -88,6 +88,13 @@ data class TerminalOutputLine(
     val exitCode: Int = 0,
 )
 
+/** One `hermes doctor`-style check row: label, pass/fail, one-line evidence. */
+data class DiagnosticCheck(
+    val label: String,
+    val passed: Boolean,
+    val detail: String,
+)
+
 private val ANSI_TERMINAL_SEQUENCE = Regex("\\u001B(?:\\][^\\u0007]*(?:\\u0007|\\u001B\\\\)|\\[[0-?]*[ -/]*[@-~]|[()][A-Z0-9])")
 
 internal fun sanitizeTerminalOutput(text: String): String = text
@@ -197,6 +204,8 @@ data class AppUiState(
     val devStackBytesPerSecond: Long? = null,
     val agentKind: AgentKind = AgentKind.CLAUDE_CODE,
     val installedAgentVersions: Map<AgentKind, String> = emptyMap(),
+    val diagnostics: List<DiagnosticCheck> = emptyList(),
+    val diagnosticsRunning: Boolean = false,
     val agentInstalling: AgentKind? = null,
     val agentMessage: String? = null,
     val agentProgress: Float = 0f,
@@ -1558,6 +1567,74 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ): ConnectionValidation {
         val key = secret.ifBlank { vault.get(profile.kind.name).orEmpty() }
         return providerApi.validate(profile.baseUrl, profile.model, key, profile.effectiveProtocol(), models, preferences.opencodeSessionId, keyless = profile.kind == ProviderKind.OPENCODE_FREE)
+    }
+
+    /** `hermes doctor` for the phone: staged host-side checks plus a live
+     * provider probe. Every row carries its own evidence — no guessing. */
+    fun runDiagnostics() {
+        if (_state.value.diagnosticsRunning) return
+        _state.update { it.copy(diagnosticsRunning = true, diagnostics = emptyList()) }
+        viewModelScope.launch {
+            val checks = withContext(Dispatchers.IO) { buildDiagnostics() }
+            _state.update { it.copy(diagnosticsRunning = false, diagnostics = checks) }
+        }
+    }
+
+    private fun buildDiagnostics(): List<DiagnosticCheck> {
+        val out = mutableListOf<DiagnosticCheck>()
+        val runtimeOk = runCatching { installer.isInstalled() }.getOrDefault(false)
+        out += DiagnosticCheck(
+            "Linux runtime",
+            runtimeOk,
+            if (runtimeOk) "Ubuntu 20.04 PRoot ready" else "Not installed — finish the 3-step setup first",
+        )
+        val hermesBin = runtimeOk &&
+            runCatching { installer.guestToolUsable(RuntimeInstaller.HERMES_GUEST_PATH) }.getOrDefault(false)
+        out += DiagnosticCheck(
+            "Hermes binary",
+            hermesBin,
+            if (hermesBin) "~/.local/bin/hermes resolves inside the runtime"
+            else "Missing or broken symlink — reinstall Hermes Agent",
+        )
+        val marker = runCatching { installer.hermesVersion }.getOrDefault("")
+        out += DiagnosticCheck(
+            "Install marker",
+            marker.isNotBlank(),
+            if (marker.isNotBlank()) "v$marker" else "No marker — install did not complete",
+        )
+        val python = runtimeOk &&
+            runCatching { installer.guestToolUsable("/root/.local/bin/python3.11") }.getOrDefault(false)
+        out += DiagnosticCheck(
+            "Python 3.11",
+            python,
+            if (python) "uv Python resolves" else "Missing — reinstall Hermes Agent",
+        )
+        val pathOk = RuntimeInstaller.GUEST_BASE_PATH.split(":").firstOrNull() == "/root/.local/bin"
+        out += DiagnosticCheck(
+            "Terminal PATH",
+            pathOk,
+            if (pathOk) "~/.local/bin is first in the guest PATH"
+            else "App bug — report this line",
+        )
+        val profile = _state.value.provider
+        val key = vault.get(profile.kind.name).orEmpty()
+        val keyless = profile.kind == ProviderKind.OPENCODE_FREE
+        if (profile.baseUrl.isBlank() || profile.model.isBlank() || (!keyless && key.isBlank())) {
+            out += DiagnosticCheck("Provider probe", false, "Skipped — set provider, model, and key first")
+        } else {
+            val probe = runCatching {
+                providerApi.validate(
+                    profile.baseUrl, profile.model, key, profile.effectiveProtocol(),
+                    emptyList(), preferences.opencodeSessionId, keyless = keyless,
+                )
+            }.getOrNull()
+            when (probe) {
+                is ConnectionValidation.Success -> out += DiagnosticCheck("Provider probe", true, probe.message.take(120))
+                is ConnectionValidation.Failure -> out += DiagnosticCheck("Provider probe", false, probe.message.take(180))
+                null -> out += DiagnosticCheck("Provider probe", false, "Probe crashed — retry")
+            }
+        }
+        return out
     }
 
     fun pingApi() {

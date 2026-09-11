@@ -1957,6 +1957,7 @@ private fun RootScreenHost(
                     onSetThemeMode = viewModel::setThemeMode,
                     onPing = viewModel::pingApi,
                     onClearTerminal = viewModel::clearTerminal,
+                    onRunDiagnostics = viewModel::runDiagnostics,
                     getSavedApiKey = viewModel::getSavedApiKey,
                     getSavedApiKeys = viewModel::getSavedApiKeys,
                     onAddApiKey = viewModel::addApiKey,

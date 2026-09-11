@@ -296,23 +296,27 @@ class RuntimeInstaller(private val context: Context) {
                 File(rootfs, AGY_GUEST_PATH.removePrefix("/")).canExecute() &&
                 !agyMarker.readTextOrNull().isNullOrBlank()
             com.jarves.mh.model.AgentKind.HERMES -> isInstalled() &&
-                hermesBinaryUsable() &&
+                guestToolUsable(HERMES_GUEST_PATH) &&
                 !hermesMarker.readTextOrNull().isNullOrBlank()
         }
     }
 
     /**
-     * uv installs `hermes` as an ABSOLUTE symlink
-     * (/root/.local/bin/hermes -> /root/.local/share/uv/...). Like the dsh case
-     * above, File.canExecute() follows it against Android's host root and
-     * reports false outside PRoot — so resolve the target inside [rootfs].
+     * uv installs entry points as ABSOLUTE symlinks
+     * (/root/.local/bin/hermes -> /root/.local/share/uv/...). File.canExecute()
+     * follows them against Android's host root and reports false outside PRoot —
+     * so resolve the target inside [rootfs]. Relative targets resolve against
+     * the link's own directory.
      */
-    private fun hermesBinaryUsable(): Boolean {
-        val link = File(rootfs, HERMES_GUEST_PATH.removePrefix("/"))
+    fun guestToolUsable(guestPath: String): Boolean {
+        val link = File(rootfs, guestPath.removePrefix("/"))
         if (link.canExecute()) return true
         return try {
             val target = java.nio.file.Files.readSymbolicLink(link.toPath()).toString()
-            val rel = if (target.startsWith("/")) target.removePrefix("/") else "root/.local/bin/$target"
+            val rel = if (target.startsWith("/")) target.removePrefix("/") else {
+                val parent = guestPath.removePrefix("/").substringBeforeLast("/", "")
+                if (parent.isEmpty()) target else "$parent/$target"
+            }
             File(rootfs, rel).canExecute()
         } catch (_: Exception) {
             false
@@ -497,7 +501,7 @@ internal object HermesGuestScripts {
 
         hermesMarker.readTextOrNull()
             ?.trim()
-            ?.takeIf { it.isNotEmpty() && hermesBinaryUsable() }
+            ?.takeIf { it.isNotEmpty() && guestToolUsable(HERMES_GUEST_PATH) }
             ?.let { put(com.jarves.mh.model.AgentKind.HERMES, it) }
     }
 
@@ -1490,9 +1494,7 @@ internal object HermesGuestScripts {
             environment = buildMap {
                 put("HOME", "/root")
                 val androidReady = File(rootfs, "root/.pocket-android-tools-version").readTextOrNull() == ANDROID_TOOLS_VERSION
-                // uv/pip user tools (hermes, agy, gh, python3.11) live here —
-                // without this the interactive terminal reports "command not found".
-                val basePath = "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                val basePath = GUEST_BASE_PATH
                 if (androidReady) {
                     put("ANDROID_HOME", "/root/android-sdk")
                     put("ANDROID_SDK_ROOT", "/root/android-sdk")
@@ -1822,6 +1824,10 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
     companion object {
         const val AGY_GUEST_PATH = "/root/.local/bin/agy"
         const val HERMES_GUEST_PATH = "/root/.local/bin/hermes"
+        /** Guest PATH for every spawned process — ~/.local/bin first so uv/pip
+         * tools (hermes, agy, gh, python3.11) resolve in the terminal. */
+        const val GUEST_BASE_PATH =
+            "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         private const val HERMES_VERSION = "0.1.0"
         const val GITHUB_CLI_GUEST_PATH = "/root/.local/bin/gh"
         private const val AGY_VERSION = "1.1.27"

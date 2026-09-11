@@ -116,6 +116,7 @@ fun SettingsScreen(
     onSetThemeMode: (AppThemeMode) -> Unit,
     onPing: () -> Unit,
     onClearTerminal: () -> Unit,
+    onRunDiagnostics: () -> Unit = {},
     getSavedApiKey: (ProviderKind) -> String,
     getSavedApiKeys: (ProviderKind) -> List<ApiKeyInfo>,
     onAddApiKey: (ProviderKind, String, String) -> List<ApiKeyInfo>,
@@ -721,6 +722,13 @@ fun SettingsScreen(
                             ) { Text("Open Developer options") }
                         }
                     }
+                    Spacer(Modifier.height(8.dp))
+                    DiagnosticsCard(
+                        diagnostics = state.diagnostics,
+                        running = state.diagnosticsRunning,
+                        providerLabel = state.provider.kind.title + " · " + state.provider.model.ifBlank { "no model" },
+                        onRun = onRunDiagnostics,
+                    )
                 }
             }
 
@@ -1229,6 +1237,70 @@ private fun HermesTerminalSignInCard() {
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticsCard(
+    diagnostics: List<DiagnosticCheck>,
+    running: Boolean,
+    providerLabel: String,
+    onRun: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Diagnostics", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            Text(
+                "Runs the phone equivalent of `hermes doctor`: runtime, Hermes install, PATH, then a live probe of $providerLabel.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            diagnostics.forEach { check ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (check.passed) "✓" else "✗",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = if (check.passed) Color(0xFF58C99C) else MaterialTheme.colorScheme.error,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(check.label, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            check.detail,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = onRun,
+                    enabled = !running,
+                    modifier = Modifier.weight(1f),
+                ) { Text(if (running) "Running…" else "Run diagnostics") }
+                if (diagnostics.isNotEmpty()) {
+                    OutlinedButton(
+                        onClick = {
+                            val report = buildString {
+                                appendLine("MH diagnostics · $providerLabel")
+                                diagnostics.forEach {
+                                    appendLine((if (it.passed) "PASS" else "FAIL") + " · " + it.label + " — " + it.detail)
+                                }
+                            }
+                            clipboard.setText(AnnotatedString(report))
+                        },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Copy report") }
+                }
+            }
         }
     }
 }
