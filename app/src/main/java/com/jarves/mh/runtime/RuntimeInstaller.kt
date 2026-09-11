@@ -296,8 +296,26 @@ class RuntimeInstaller(private val context: Context) {
                 File(rootfs, AGY_GUEST_PATH.removePrefix("/")).canExecute() &&
                 !agyMarker.readTextOrNull().isNullOrBlank()
             com.jarves.mh.model.AgentKind.HERMES -> isInstalled() &&
-                File(rootfs, HERMES_GUEST_PATH.removePrefix("/")).canExecute() &&
+                hermesBinaryUsable() &&
                 !hermesMarker.readTextOrNull().isNullOrBlank()
+        }
+    }
+
+    /**
+     * uv installs `hermes` as an ABSOLUTE symlink
+     * (/root/.local/bin/hermes -> /root/.local/share/uv/...). Like the dsh case
+     * above, File.canExecute() follows it against Android's host root and
+     * reports false outside PRoot — so resolve the target inside [rootfs].
+     */
+    private fun hermesBinaryUsable(): Boolean {
+        val link = File(rootfs, HERMES_GUEST_PATH.removePrefix("/"))
+        if (link.canExecute()) return true
+        return try {
+            val target = java.nio.file.Files.readSymbolicLink(link.toPath()).toString()
+            val rel = if (target.startsWith("/")) target.removePrefix("/") else "root/.local/bin/$target"
+            File(rootfs, rel).canExecute()
+        } catch (_: Exception) {
+            false
         }
     }
 
