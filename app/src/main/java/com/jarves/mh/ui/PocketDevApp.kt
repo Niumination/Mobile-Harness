@@ -2306,6 +2306,7 @@ private fun ProviderChoiceRow(
         ProviderKind.HUANCHENG -> Color(0xFFF59E0B)
         ProviderKind.NINE_ROUTER -> Color(0xFF6366F1)
         ProviderKind.OPENCODE_ZEN -> Color(0xFFEC4899)
+        ProviderKind.OPENCODE_FREE -> Color(0xFF14B8A6)
         ProviderKind.HERMES -> Color(0xFF22C55E)
         ProviderKind.CUSTOM -> PocketOrange
     }
@@ -2319,6 +2320,7 @@ private fun ProviderChoiceRow(
         ProviderKind.HUANCHENG -> "H"
         ProviderKind.NINE_ROUTER -> "9"
         ProviderKind.OPENCODE_ZEN -> "OZ"
+        ProviderKind.OPENCODE_FREE -> "OF"
         ProviderKind.HERMES -> "HE"
         ProviderKind.CUSTOM -> "<>"
     }

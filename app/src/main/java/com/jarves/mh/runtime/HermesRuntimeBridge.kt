@@ -111,7 +111,7 @@ internal class HermesRuntimeBridge(
                         state.isActive = false
                         return@withContext
                     }
-                val env = buildHermesEnvironment(provider, token)
+                val env = buildHermesEnvironment(provider, token.orEmpty())
                 val workspace = File(context.filesDir, "workspaces/$projectSlug").apply { mkdirs() }
                 state.process = installer.process(
                     installed.proot,
