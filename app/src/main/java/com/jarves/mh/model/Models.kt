@@ -37,7 +37,7 @@ enum class ProviderKind(
         "Free tier · no key, no account",
         ProviderProtocol.OPENAI_CHAT,
         "https://opencode.ai/zen/v1",
-        "mimo-v2.5-free",
+        "ling-3.0-flash-fin-free",
         fixedBaseUrl = true,
         fixedProtocol = true,
     ),
