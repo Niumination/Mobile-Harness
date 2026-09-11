@@ -391,7 +391,7 @@ internal object HermesGuestScripts {
             proot = proot,
             command = env +
                 HermesGuestScripts.hermesPythonBootstrapSnippet() +
-                "\"\\$PYBIN\" --version\n",
+                "\"\$PYBIN\" --version\n",
             displayCommand = "Preparing Python 3.11 (uv)",
             fraction = 0.05f,
             timeoutMs = 20 * 60 * 1_000L,
@@ -401,11 +401,11 @@ internal object HermesGuestScripts {
         runGuestCommand(
             proot = proot,
             command = env +
-                "install_hermes_pip() { \"\\$@\" install --break-system-packages hermes-agent || \"\\$@\" install hermes-agent; }\n" +
-                "if ! uv tool install --python \"\\$PYBIN\" hermes-agent; then\n" +
-                "install_hermes_pip \"\\$PYBIN\" -m pip\n" +
-                "HBIN=\\$(dirname \"\\$(command -v \"\\$PYBIN\")\")/hermes\n" +
-                "if [ ! -x /root/.local/bin/hermes ] && [ -x \"\\$HBIN\" ]; then ln -sf \"\\$HBIN\" /root/.local/bin/hermes; fi\n" +
+                "install_hermes_pip() { \"\$@\" install --break-system-packages hermes-agent || \"\$@\" install hermes-agent; }\n" +
+                "if ! uv tool install --python \"\$PYBIN\" hermes-agent; then\n" +
+                "install_hermes_pip \"\$PYBIN\" -m pip\n" +
+                "HBIN=\$(dirname \"\$(command -v \"\$PYBIN\")\")/hermes\n" +
+                "if [ ! -x /root/.local/bin/hermes ] && [ -x \"\$HBIN\" ]; then ln -sf \"\$HBIN\" /root/.local/bin/hermes; fi\n" +
                 "fi\n",
             displayCommand = "Installing hermes-agent package",
             fraction = 0.55f,
