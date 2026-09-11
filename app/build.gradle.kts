@@ -64,6 +64,16 @@ android {
                 keyPassword = checkNotNull(uploadKeyPassword)
             }
         }
+        // Pinned CI debug key (MH_DEBUG_KEYSTORE env -> JKS android/android).
+        // Absent locally: Gradle keeps its default debug signing untouched.
+        if (System.getenv("MH_DEBUG_KEYSTORE")?.takeIf { it.isNotBlank() }?.let(::file)?.exists() == true) {
+            create("pinnedDebug") {
+                storeFile = file(checkNotNull(System.getenv("MH_DEBUG_KEYSTORE")))
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
     }
 
     defaultConfig {
@@ -117,6 +127,9 @@ android {
 
     buildTypes {
         debug {
+            if (System.getenv("MH_DEBUG_KEYSTORE")?.isNotBlank() == true) {
+                signingConfig = signingConfigs.getByName("pinnedDebug")
+            }
             buildConfigField(
                 "String",
                 "TEST_OPENROUTER_API_KEY",

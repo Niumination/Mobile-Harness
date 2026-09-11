@@ -154,8 +154,8 @@ jobs:
           KS_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
         run: |
           if [ -n "$KS_B64" ]; then
-            mkdir -p ~/.android
-            printf '%s' "$KS_B64" | base64 -d > ~/.android/debug.keystore
+            printf '%s' "$KS_B64" | base64 -d > "$RUNNER_TEMP/mh-debug.keystore"
+            echo "MH_DEBUG_KEYSTORE=$RUNNER_TEMP/mh-debug.keystore" >> "$GITHUB_ENV"
           fi
 
       - name: Make gradlew executable
@@ -173,6 +173,30 @@ jobs:
 
       - name: Build debug APK (Play Protect compatible)
         run: ./gradlew -PplayBuild=true :app:assembleOnlineDebug
+
+      - name: Assert pinned signature
+        run: |
+          pip install -q asn1crypto
+          python3 - <<'EOF'
+          import sys, hashlib
+          from asn1crypto import x509
+          want = "33d96b3dd9a56edfda9b97702fdd826bada5c1deebb34b71944d848bb3ff9a9f"
+          d = open('app/build/outputs/apk/online/debug/app-online-debug.apk', 'rb').read()
+          found = set(); i = 0
+          while True:
+              i = d.find(b'\x30\x82', i)
+              if i < 0: break
+              ln = int.from_bytes(d[i+2:i+4], 'big')
+              blob = d[i:i+4+ln]
+              if len(blob) == 4 + ln:
+                  try:
+                      x509.Certificate.load(blob)
+                      found.add(hashlib.sha256(blob).hexdigest())
+                  except Exception: pass
+              i += 1
+          print('certs:', sorted(found))
+          sys.exit(0 if want in found else 1)
+          EOF
 
       - name: Get version info
         id: version
