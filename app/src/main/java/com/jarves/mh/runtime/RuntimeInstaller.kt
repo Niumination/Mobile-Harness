@@ -308,6 +308,34 @@ class RuntimeInstaller(private val context: Context) {
 
     val githubCliVersion: String get() = githubCliMarker.readTextOrNull().orEmpty()
     /**
+     * Guest shell snippet: echoes the newest Python >= 3.11 binary name.
+     * hermes-agent requires-python >= 3.11 on every release, while the bundled
+     * Ubuntu 20.04 image only ships Python 3.8 — so `python3` alone is not enough.
+     */
+    private fun hermesPythonPickSnippet(): String =
+        "pick_hermes_py() { for c in python3.13 python3.12 python3.11 python3; do " +
+            "command -v \$c >/dev/null || continue; " +
+            "v=\$(\$c -c 'import sys; print(sys.version_info[0]*100+sys.version_info[1])' 2>/dev/null || echo 0); " +
+            "if [ \$v -ge 311 ]; then echo \$c; return 0; fi; done; return 1; }\n" +
+            "PYBIN=\$(pick_hermes_py || true)\n"
+
+    /**
+     * Guest shell snippet: installs Python 3.11 via deadsnakes when the pick
+     * above found nothing, then guarantees pip for the chosen interpreter.
+     * Never repoints the system `python3` symlink — versioned binary only.
+     */
+    private fun hermesPythonBootstrapSnippet(): String =
+        "if [ -z \"\$PYBIN\" ]; then\n" +
+            "apt-get -o DPkg::Lock::Timeout=180 update\n" +
+            "apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends software-properties-common\n" +
+            "add-apt-repository -y ppa:deadsnakes/ppa\n" +
+            "apt-get -o DPkg::Lock::Timeout=180 update\n" +
+            "apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends python3.11 python3.11-venv\n" +
+            "PYBIN=python3.11\n" +
+            "fi\n" +
+            "\"\$PYBIN\" -m pip --version >/dev/null 2>&1 || \"\$PYBIN\" -m ensurepip --upgrade\n"
+
+    /**
      * Installs Hermes Agent via pip in the Termux/Linux runtime.
      */
     private suspend fun ensureHermesInstalled(
@@ -319,19 +347,19 @@ class RuntimeInstaller(private val context: Context) {
 
         // Route through runGuestCommand so pip's real error reaches the UI
         // instead of a static "pip install failed". PEP 668 (Ubuntu 23.04+)
-        // refuses system-wide installs without --break-system-packages, and
-        // some images only ship pip3 — cover both.
+        // refuses system-wide installs without --break-system-packages.
+        // Python selection is version-aware: hermes-agent needs >= 3.11 and
+        // the bundled image only has 3.8, so bootstrap 3.11 when missing.
         runGuestCommand(
             proot = proot,
             command = "set -e\n" +
+                hermesPythonPickSnippet() +
+                hermesPythonBootstrapSnippet() +
                 "install_hermes() { \"\$@\" install --break-system-packages hermes-agent || \"\$@\" install hermes-agent; }\n" +
-                "if python3 -m pip --version >/dev/null 2>&1; then install_hermes python3 -m pip\n" +
-                "elif command -v pip3 >/dev/null; then install_hermes pip3\n" +
-                "else install_hermes pip\n" +
-                "fi",
+                "install_hermes \"\$PYBIN\" -m pip\n",
             displayCommand = "Installing Hermes Agent",
             fraction = fraction,
-            timeoutMs = 600_000L,
+            timeoutMs = 20 * 60 * 1_000L,
             onProgress = onProgress,
             failureMessage = "Hermes Agent pip install failed",
         )
@@ -415,6 +443,11 @@ class RuntimeInstaller(private val context: Context) {
             ?.trim()
             ?.takeIf { it.isNotEmpty() && File(rootfs, AGY_GUEST_PATH.removePrefix("/")).canExecute() }
             ?.let { put(com.jarves.mh.model.AgentKind.ANTIGRAVITY, it) }
+
+        hermesMarker.readTextOrNull()
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && File(rootfs, HERMES_GUEST_PATH.removePrefix("/")).canExecute() }
+            ?.let { put(com.jarves.mh.model.AgentKind.HERMES, it) }
     }
 
     /** Checks each installed agent against its own authoritative release source. */
@@ -526,7 +559,10 @@ class RuntimeInstaller(private val context: Context) {
         check(expectedVersion.isNotBlank()) { "Hermes Agent version is required" }
         runGuestCommand(
             proot = runtime.proot,
-            command = "set -e; (python3 -m pip install --break-system-packages --upgrade hermes-agent || python3 -m pip install --upgrade hermes-agent || pip3 install --break-system-packages --upgrade hermes-agent)",
+            command = "set -e\n" +
+                hermesPythonPickSnippet() +
+                "if [ -z \"\$PYBIN\" ]; then echo 'No Python >= 3.11 in guest; reinstall Hermes Agent'; exit 1; fi\n" +
+                "\"\$PYBIN\" -m pip install --break-system-packages --upgrade hermes-agent || \"\$PYBIN\" -m pip install --upgrade hermes-agent",
             displayCommand = "Updating Hermes Agent",
             fraction = 0.5f,
             timeoutMs = 600_000L,
