@@ -380,24 +380,40 @@ internal object HermesGuestScripts {
         // the bundled image only has 3.8, so provide 3.11 via uv when missing.
         // UV_LINK_MODE=copy because PRoot rejects hardlinks; HOME=/root keeps
         // uv paths deterministic.
+        // Staged into 3 guest calls so the settings progress bar keeps moving
+        // during the multi-minute download (a single call emits one event and
+        // the UI looks dead-stuck). Shell state does not persist across calls,
+        // so every stage re-runs the cheap pick snippet.
+        val env = "set -e\n" +
+            "export DEBIAN_FRONTEND=noninteractive UV_LINK_MODE=copy HOME=/root\n" +
+            HermesGuestScripts.hermesPythonPickSnippet()
         runGuestCommand(
             proot = proot,
-            command = "set -e\n" +
-                "export DEBIAN_FRONTEND=noninteractive UV_LINK_MODE=copy HOME=/root\n" +
-                HermesGuestScripts.hermesPythonPickSnippet() +
+            command = env +
                 HermesGuestScripts.hermesPythonBootstrapSnippet() +
-                "install_hermes_pip() { \"\$@\" install --break-system-packages hermes-agent || \"\$@\" install hermes-agent; }\n" +
-                "if ! uv tool install --python \"\$PYBIN\" hermes-agent; then\n" +
-                "install_hermes_pip \"\$PYBIN\" -m pip\n" +
-                "HBIN=\$(dirname \"\$(command -v \"\$PYBIN\")\")/hermes\n" +
-                "if [ ! -x /root/.local/bin/hermes ] && [ -x \"\$HBIN\" ]; then ln -sf \"\$HBIN\" /root/.local/bin/hermes; fi\n" +
+                "\"\\$PYBIN\" --version\n",
+            displayCommand = "Preparing Python 3.11 (uv)",
+            fraction = 0.05f,
+            timeoutMs = 20 * 60 * 1_000L,
+            onProgress = onProgress,
+            failureMessage = "Hermes Agent Python setup failed",
+        )
+        runGuestCommand(
+            proot = proot,
+            command = env +
+                "install_hermes_pip() { \"\\$@\" install --break-system-packages hermes-agent || \"\\$@\" install hermes-agent; }\n" +
+                "if ! uv tool install --python \"\\$PYBIN\" hermes-agent; then\n" +
+                "install_hermes_pip \"\\$PYBIN\" -m pip\n" +
+                "HBIN=\\$(dirname \"\\$(command -v \"\\$PYBIN\")\")/hermes\n" +
+                "if [ ! -x /root/.local/bin/hermes ] && [ -x \"\\$HBIN\" ]; then ln -sf \"\\$HBIN\" /root/.local/bin/hermes; fi\n" +
                 "fi\n",
-            displayCommand = "Installing Hermes Agent",
-            fraction = fraction,
+            displayCommand = "Installing hermes-agent package",
+            fraction = 0.55f,
             timeoutMs = 20 * 60 * 1_000L,
             onProgress = onProgress,
             failureMessage = "Hermes Agent pip install failed",
         )
+        onProgress(RuntimeInstallProgress("Verifying Hermes Agent", 0.9f))
         verifyGuest(proot, "$HERMES_GUEST_PATH --version", "Hermes Agent verification failed")
         hermesMarker.writeText(HERMES_VERSION)
         require(isAgentInstalled(com.jarves.mh.model.AgentKind.HERMES)) {
