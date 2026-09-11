@@ -1580,7 +1580,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun buildDiagnostics(): List<DiagnosticCheck> {
+    private suspend fun buildDiagnostics(): List<DiagnosticCheck> {
         val out = mutableListOf<DiagnosticCheck>()
         val runtimeOk = runCatching { installer.isInstalled() }.getOrDefault(false)
         out += DiagnosticCheck(
