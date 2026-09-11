@@ -1066,6 +1066,14 @@ private fun ConnectionSettings(
     }
     if (selectedKind == ProviderKind.CUSTOM) {
         Text("Gateway protocol", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if ("opencode.ai/zen" in baseUrl.lowercase()) {
+            Text(
+                "Zen routes by model family on this base: openai-responses for Muse/GPT, " +
+                    "anthropic-messages for Claude/Qwen, openai-completions for DeepSeek/Kimi/GLM.",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)) {
             Column {
                 listOf("anthropic-messages", "openai-completions", "openai-responses").forEach { option ->
