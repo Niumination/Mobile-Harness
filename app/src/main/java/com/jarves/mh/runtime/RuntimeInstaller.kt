@@ -497,7 +497,7 @@ internal object HermesGuestScripts {
 
         hermesMarker.readTextOrNull()
             ?.trim()
-            ?.takeIf { it.isNotEmpty() && File(rootfs, HERMES_GUEST_PATH.removePrefix("/")).canExecute() }
+            ?.takeIf { it.isNotEmpty() && hermesBinaryUsable() }
             ?.let { put(com.jarves.mh.model.AgentKind.HERMES, it) }
     }
 
