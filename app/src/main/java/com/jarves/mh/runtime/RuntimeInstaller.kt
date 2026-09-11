@@ -328,6 +328,37 @@ class RuntimeInstaller(private val context: Context) {
     val agyVersion: String get() = agyMarker.readTextOrNull().orEmpty()
     val hermesVersion: String get() = hermesMarker.readTextOrNull().orEmpty()
 
+    /**
+     * Self-heal for a healthy Hermes binary with a lost install marker (e.g.
+     * runtime restored from backup, installer re-run that never finished).
+     * Returns the detected version, or null when there is nothing to repair.
+     */
+    suspend fun repairHermesMarker(): String? {
+        if (!isInstalled()) return null
+        if (!guestToolUsable(HERMES_GUEST_PATH)) return null
+        if (!hermesMarker.readTextOrNull().isNullOrBlank()) return null
+        val runtime = runCatching { installedRuntime() }.getOrNull() ?: return null
+        val probe = process(
+            proot = runtime.proot,
+            rootfs = rootfs,
+            workspace = File(rootfs, "root"),
+            environment = emptyMap(),
+            guestCommand = listOf("/usr/bin/env", "bash", "-lc", "$HERMES_GUEST_PATH --version"),
+        )
+        withTimeout(60_000L) {
+            while (probe.isAlive) delay(50)
+        }
+        val exit = probe.waitFor()
+        if (exit != 0) return null
+        val output = (probe as? NativeSpawnProcess)?.outputFile
+            ?.let(::readProcessOutputSafely)
+            .orEmpty()
+            .trim()
+        val version = Regex("""\d+\.\d+\.\d+""").find(output)?.value ?: return null
+        hermesMarker.writeText(version)
+        return version
+    }
+
     val githubCliVersion: String get() = githubCliMarker.readTextOrNull().orEmpty()
 /**
  * Pure guest-shell script builders for the Hermes Agent install/update flow.

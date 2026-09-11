@@ -1596,11 +1596,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (hermesBin) "~/.local/bin/hermes resolves inside the runtime"
             else "Missing or broken symlink — reinstall Hermes Agent",
         )
-        val marker = runCatching { installer.hermesVersion }.getOrDefault("")
+        var marker = runCatching { installer.hermesVersion }.getOrDefault("")
+        if (marker.isBlank() && hermesBin) {
+            marker = runCatching { installer.repairHermesMarker() }.getOrNull().orEmpty()
+        }
         out += DiagnosticCheck(
             "Install marker",
             marker.isNotBlank(),
-            if (marker.isNotBlank()) "v$marker" else "No marker — install did not complete",
+            if (marker.isNotBlank()) "v$marker" else "No marker and binary unusable — reinstall Hermes Agent",
         )
         val python = runtimeOk &&
             runCatching { installer.guestToolUsable("/root/.local/bin/python3.11") }.getOrDefault(false)

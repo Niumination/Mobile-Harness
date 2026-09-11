@@ -1081,6 +1081,26 @@ private fun ConnectionSettings(
                 fontSize = 11.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            val lowerBase = baseUrl.lowercase().trimEnd('/')
+            if (lowerBase != "https://opencode.ai/zen/v1" && lowerBase != "http://opencode.ai/zen/v1") {
+                OutlinedButton(
+                    onClick = { onBaseUrl("https://opencode.ai/zen/v1") },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Use recommended base (…/zen/v1)") }
+            }
+            val lowerModel = model.lowercase()
+            val mismatchHint = when {
+                lowerModel.startsWith("deepseek") && dshApi != "openai-completions" ->
+                    "DeepSeek models on Zen only serve openai-completions — switch protocol or use muse-spark-1.3."
+                (lowerModel.startsWith("muse-spark") || lowerModel.startsWith("gpt") || lowerModel.startsWith("grok")) && dshApi != "openai-responses" ->
+                    "This model on Zen only serves openai-responses — switch protocol."
+                (lowerModel.startsWith("claude") || lowerModel.startsWith("qwen")) && dshApi != "anthropic-messages" ->
+                    "This model on Zen only serves anthropic-messages — switch protocol."
+                else -> null
+            }
+            if (mismatchHint != null) {
+                Text(mismatchHint, fontSize = 11.sp, color = MaterialTheme.colorScheme.error)
+            }
         }
         Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)) {
             Column {
