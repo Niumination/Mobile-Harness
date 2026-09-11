@@ -176,6 +176,7 @@ The `deepseek_harness` branch provided the multi-agent infrastructure. Merge con
 | 2026-09-10 | CI green: per-flavor tasks, submodules recursive, online APK → Release v1.0.3 (62 MB) |
 | 2026-09-10 | Full docs sync to actual state: README, DEVELOPMENT-GUIDE, HERMES doc, PLAY_STORE, update-testing, AGENTS.md |
 | 2026-09-10 | Onboarding Fase A–C: badge Claude, skip Step 2 Antigravity, effectiveProtocol custom end-to-end, daftar Hermes tanpa localhost |
+| 2026-09-12 | AI connection: protocol picker dibuka untuk semua Custom (Hermes bisa pakai Zen base `/zen/v1` + openai-responses), kartu Terminal sign-in Nous di connection Hermes |
 
 ## CI Debug Notes
 

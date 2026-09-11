@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -1063,7 +1064,7 @@ private fun ConnectionSettings(
     } else {
         OutlinedTextField(baseUrl, onBaseUrl, label = { Text("Base URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
     }
-    if (state.agentKind == AgentKind.DEEPSEEK_HARNESS && selectedKind == ProviderKind.CUSTOM) {
+    if (selectedKind == ProviderKind.CUSTOM) {
         Text("Gateway protocol", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)) {
             Column {
@@ -1172,6 +1173,55 @@ private fun ConnectionSettings(
             Spacer(Modifier.width(8.dp))
         }
         Text(if (isValidating) "Checking connection" else "Test connection and save")
+    }
+    if (state.agentKind == AgentKind.HERMES) {
+        HermesTerminalSignInCard()
+    }
+}
+
+@Composable
+private fun HermesTerminalSignInCard() {
+    val clipboard = LocalClipboardManager.current
+    val nousCommand = "hermes auth add nous --type oauth"
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    ) {
+        Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Terminal sign-in (OAuth)", fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+            Text(
+                "Browser login lives in the Terminal tab for now. API keys saved above are " +
+                    "forwarded to Hermes automatically for known hosts.",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        nousCommand,
+                        Modifier.weight(1f),
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 2,
+                    )
+                    IconButton(onClick = { clipboard.setText(AnnotatedString(nousCommand)) }) {
+                        Icon(Icons.Default.ContentCopy, "Copy Nous sign-in command")
+                    }
+                }
+            }
+            Text(
+                "Run it in Terminal, open the shown URL in your browser, sign in to the Nous portal.",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
