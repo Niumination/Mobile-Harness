@@ -226,8 +226,9 @@ class AgentProviderPresetTest {
     fun dshHarnessExcludesClaudeSubscription() {
         assertFalse(ProviderKind.CLAUDE in DEEPSEEK_HARNESS_PROVIDERS)
         assertTrue(ProviderKind.OPENCODE_ZEN in DEEPSEEK_HARNESS_PROVIDERS)
+        assertTrue(ProviderKind.OPENCODE_FREE in DEEPSEEK_HARNESS_PROVIDERS)
         assertTrue(ProviderKind.DEEPSEEK in DEEPSEEK_HARNESS_PROVIDERS)
-        assertEquals(6, DEEPSEEK_HARNESS_PROVIDERS.size)
+        assertEquals(7, DEEPSEEK_HARNESS_PROVIDERS.size)
     }
 
     @Test
