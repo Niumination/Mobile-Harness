@@ -149,6 +149,15 @@ jobs:
           openrouter.apiKey=
           EOF
 
+      - name: Restore pinned debug keystore
+        env:
+          KS_B64: ${{ secrets.ANDROID_DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            mkdir -p ~/.android
+            printf '%s' "$KS_B64" | base64 -d > ~/.android/debug.keystore
+          fi
+
       - name: Make gradlew executable
         run: chmod +x gradlew
 

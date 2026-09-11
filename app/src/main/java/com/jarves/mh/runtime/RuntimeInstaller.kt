@@ -307,12 +307,18 @@ class RuntimeInstaller(private val context: Context) {
     val hermesVersion: String get() = hermesMarker.readTextOrNull().orEmpty()
 
     val githubCliVersion: String get() = githubCliMarker.readTextOrNull().orEmpty()
+/**
+ * Pure guest-shell script builders for the Hermes Agent install/update flow.
+ * Kept free of Android dependencies so unit tests can assert on the exact
+ * commands (Python >= 3.11 selection, uv bootstrap, PRoot-safe link mode).
+ */
+internal object HermesGuestScripts {
     /**
      * Guest shell snippet: echoes the newest Python >= 3.11 binary name.
      * hermes-agent requires-python >= 3.11 on every release, while the bundled
      * Ubuntu 20.04 image only ships Python 3.8 — so `python3` alone is not enough.
      */
-    private fun hermesPythonPickSnippet(): String =
+    fun hermesPythonPickSnippet(): String =
         "pick_hermes_py() { for c in python3.13 python3.12 python3.11 python3; do " +
             "command -v \$c >/dev/null || continue; " +
             "v=\$(\$c -c 'import sys; print(sys.version_info[0]*100+sys.version_info[1])' 2>/dev/null || echo 0); " +
@@ -320,20 +326,24 @@ class RuntimeInstaller(private val context: Context) {
             "PYBIN=\$(pick_hermes_py || true)\n"
 
     /**
-     * Guest shell snippet: installs Python 3.11 via deadsnakes when the pick
-     * above found nothing, then guarantees pip for the chosen interpreter.
-     * Never repoints the system `python3` symlink — versioned binary only.
+     * Guest shell snippet: provides Python 3.11 via uv when the pick above
+     * found nothing, then guarantees pip for the chosen interpreter.
+     * uv (not deadsnakes) is used because the PPA dropped Ubuntu 20.04 and
+     * uv ships standalone ARM64 builds. Never repoints `python3` itself.
      */
-    private fun hermesPythonBootstrapSnippet(): String =
+    internal fun hermesPythonBootstrapSnippet(): String =
         "if [ -z \"\$PYBIN\" ]; then\n" +
-            "apt-get -o DPkg::Lock::Timeout=180 update\n" +
-            "apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends software-properties-common\n" +
-            "add-apt-repository -y ppa:deadsnakes/ppa\n" +
-            "apt-get -o DPkg::Lock::Timeout=180 update\n" +
-            "apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends python3.11 python3.11-venv\n" +
+            "python3 -m pip --version >/dev/null 2>&1 || python3 -m ensurepip --upgrade >/dev/null 2>&1 || { apt-get -o DPkg::Lock::Timeout=180 update && apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends python3-pip; }\n" +
+            "python3 -m pip --version >/dev/null 2>&1 || { echo 'pip unavailable; install the Python toolchain from Developer tools first'; exit 1; }\n" +
+            "python3 -m pip install -q uv\n" +
+            "uv python install 3.11\n" +
+            "PY311BIN=\$(echo \"\$HOME\"/.local/share/uv/python/cpython-3.11-*/bin/python3.11)\n" +
+            "[ -x \"\$PY311BIN\" ] || { echo 'uv failed to provide Python 3.11'; exit 1; }\n" +
+            "ln -sf \"\$PY311BIN\" /usr/local/bin/python3.11\n" +
             "PYBIN=python3.11\n" +
             "fi\n" +
             "\"\$PYBIN\" -m pip --version >/dev/null 2>&1 || \"\$PYBIN\" -m ensurepip --upgrade\n"
+}
 
     /**
      * Installs Hermes Agent via pip in the Termux/Linux runtime.
@@ -349,14 +359,21 @@ class RuntimeInstaller(private val context: Context) {
         // instead of a static "pip install failed". PEP 668 (Ubuntu 23.04+)
         // refuses system-wide installs without --break-system-packages.
         // Python selection is version-aware: hermes-agent needs >= 3.11 and
-        // the bundled image only has 3.8, so bootstrap 3.11 when missing.
+        // the bundled image only has 3.8, so provide 3.11 via uv when missing.
+        // UV_LINK_MODE=copy because PRoot rejects hardlinks; HOME=/root keeps
+        // uv paths deterministic.
         runGuestCommand(
             proot = proot,
             command = "set -e\n" +
-                hermesPythonPickSnippet() +
-                hermesPythonBootstrapSnippet() +
-                "install_hermes() { \"\$@\" install --break-system-packages hermes-agent || \"\$@\" install hermes-agent; }\n" +
-                "install_hermes \"\$PYBIN\" -m pip\n",
+                "export DEBIAN_FRONTEND=noninteractive UV_LINK_MODE=copy HOME=/root\n" +
+                HermesGuestScripts.hermesPythonPickSnippet() +
+                HermesGuestScripts.hermesPythonBootstrapSnippet() +
+                "install_hermes_pip() { \"\$@\" install --break-system-packages hermes-agent || \"\$@\" install hermes-agent; }\n" +
+                "if ! uv tool install --python \"\$PYBIN\" hermes-agent; then\n" +
+                "install_hermes_pip \"\$PYBIN\" -m pip\n" +
+                "HBIN=\$(dirname \"\$(command -v \"\$PYBIN\")\")/hermes\n" +
+                "if [ ! -x /root/.local/bin/hermes ] && [ -x \"\$HBIN\" ]; then ln -sf \"\$HBIN\" /root/.local/bin/hermes; fi\n" +
+                "fi\n",
             displayCommand = "Installing Hermes Agent",
             fraction = fraction,
             timeoutMs = 20 * 60 * 1_000L,
@@ -560,9 +577,10 @@ class RuntimeInstaller(private val context: Context) {
         runGuestCommand(
             proot = runtime.proot,
             command = "set -e\n" +
-                hermesPythonPickSnippet() +
+                "export DEBIAN_FRONTEND=noninteractive UV_LINK_MODE=copy HOME=/root\n" +
+                HermesGuestScripts.hermesPythonPickSnippet() +
                 "if [ -z \"\$PYBIN\" ]; then echo 'No Python >= 3.11 in guest; reinstall Hermes Agent'; exit 1; fi\n" +
-                "\"\$PYBIN\" -m pip install --break-system-packages --upgrade hermes-agent || \"\$PYBIN\" -m pip install --upgrade hermes-agent",
+                "uv tool upgrade --python \"\$PYBIN\" hermes-agent || \"\$PYBIN\" -m pip install --break-system-packages --upgrade hermes-agent || \"\$PYBIN\" -m pip install --upgrade hermes-agent",
             displayCommand = "Updating Hermes Agent",
             fraction = 0.5f,
             timeoutMs = 600_000L,
