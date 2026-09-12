@@ -488,19 +488,19 @@ internal object HermesGuestScripts {
      * guest always carries the keyless opencode-free provider. Layers: uv+tarball,
      * pip+tarball, pip+PyPI last resort. Shared by fresh install and update. */
     private fun hermesInstallChain(): String =
-        "install_hermes_pip() { \"$@\" install --break-system-packages \"$PKG\" || \"$@\" install \"$PKG\"; }\n" +
+        "install_hermes_pip() { \"${'$'}@\" install --break-system-packages \"${'$'}PKG\" || \"${'$'}@\" install \"${'$'}PKG\"; }\n" +
             "rm -rf /root/.local/share/uv/tools/hermes-agent\n" +
-            "for b in hermes hermes-acp hermes-agent; do [ ! -e /root/.local/bin/\"$b\" ] || [ -x /root/.local/bin/\"$b\" ] || rm -f /root/.local/bin/\"$b\"; done\n" +
+            "for b in hermes hermes-acp hermes-agent; do [ ! -e /root/.local/bin/\"${'$'}b\" ] || [ -x /root/.local/bin/\"${'$'}b\" ] || rm -f /root/.local/bin/\"${'$'}b\"; done\n" +
             "PKG=\"hermes-agent@$HERMES_GIT_TARBALL\"\n" +
-            "if ! uv tool install --python \"$PYBIN\" \"$PKG\"; then\n" +
-            "PKG=\"$HERMES_GIT_TARBALL\" install_hermes_pip \"$PYBIN\" -m pip\n" +
-            "HBIN=$(dirname \"$(command -v \"$PYBIN\")\")/hermes\n" +
-            "if [ ! -x /root/.local/bin/hermes ] && [ -x \"$HBIN\" ]; then ln -sf \"$HBIN\" /root/.local/bin/hermes; fi\n" +
+            "if ! uv tool install --python \"${'$'}PYBIN\" \"${'$'}PKG\"; then\n" +
+            "PKG=\"$HERMES_GIT_TARBALL\" install_hermes_pip \"${'$'}PYBIN\" -m pip\n" +
+            "HBIN=${'$'}(dirname \"${'$'}(command -v \"${'$'}PYBIN\")\")/hermes\n" +
+            "if [ ! -x /root/.local/bin/hermes ] && [ -x \"${'$'}HBIN\" ]; then ln -sf \"${'$'}HBIN\" /root/.local/bin/hermes; fi\n" +
             "fi\n" +
             "if [ ! -x /root/.local/bin/hermes ]; then\n" +
-            "PKG=hermes-agent install_hermes_pip \"$PYBIN\" -m pip\n" +
-            "HBIN=$(dirname \"$(command -v \"$PYBIN\")\")/hermes\n" +
-            "if [ ! -x /root/.local/bin/hermes ] && [ -x \"$HBIN\" ]; then ln -sf \"$HBIN\" /root/.local/bin/hermes; fi\n" +
+            "PKG=hermes-agent install_hermes_pip \"${'$'}PYBIN\" -m pip\n" +
+            "HBIN=${'$'}(dirname \"${'$'}(command -v \"${'$'}PYBIN\")\")/hermes\n" +
+            "if [ ! -x /root/.local/bin/hermes ] && [ -x \"${'$'}HBIN\" ]; then ln -sf \"${'$'}HBIN\" /root/.local/bin/hermes; fi\n" +
             "fi\n"
 
 
