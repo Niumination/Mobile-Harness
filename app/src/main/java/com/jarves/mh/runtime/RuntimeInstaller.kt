@@ -359,6 +359,40 @@ class RuntimeInstaller(private val context: Context) {
         return version
     }
 
+    /**
+     * Writes Meta contributor-tier consent into the guest Hermes config so one-shot
+     * `hermes chat -Q` stops refusing muse-spark models. No-op when the runtime or
+     * Hermes is missing. Returns true when the flag was written.
+     */
+    suspend fun applyHermesConsentFlag(allow: Boolean): Boolean {
+        if (!isInstalled()) return false
+        if (!guestToolUsable(HERMES_GUEST_PATH)) return false
+        val runtime = runCatching { installedRuntime() }.getOrNull() ?: return false
+        val value = if (allow) "true" else "false"
+        val script = "set -e\n" +
+            "CFG=/root/.hermes/config.yaml\n" +
+            "mkdir -p /root/.hermes\n" +
+            "[ -f \"\$CFG\" ] || { echo 'security:' > \"\$CFG\"; echo '  allow_data_training_tiers_noninteractive: false' >> \"\$CFG\"; }\n" +
+            "if grep -q 'allow_data_training_tiers_noninteractive' \"\$CFG\"; then\n" +
+            "  sed -i 's/^\\(\\s*\\)allow_data_training_tiers_noninteractive:.*/\\1allow_data_training_tiers_noninteractive: " + value + "/' \"\$CFG\"\n" +
+            "elif grep -q '^security:' \"\$CFG\"; then\n" +
+            "  sed -i '/^security:/a \\  allow_data_training_tiers_noninteractive: " + value + "' \"\$CFG\"\n" +
+            "else\n" +
+            "  { echo ''; echo 'security:'; echo '  allow_data_training_tiers_noninteractive: " + value + "'; } >> \"\$CFG\"\n" +
+            "fi\n"
+        val proc = process(
+            proot = runtime.proot,
+            rootfs = rootfs,
+            workspace = File(rootfs, "root"),
+            environment = emptyMap(),
+            guestCommand = listOf("/usr/bin/env", "bash", "-lc", script),
+        )
+        withTimeout(60_000L) {
+            while (proc.isAlive) delay(50)
+        }
+        return proc.waitFor() == 0
+    }
+
     val githubCliVersion: String get() = githubCliMarker.readTextOrNull().orEmpty()
 /**
  * Pure guest-shell script builders for the Hermes Agent install/update flow.

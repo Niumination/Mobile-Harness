@@ -56,6 +56,11 @@ class AppPreferences(private val context: Context) {
             }
         set(value) { preferences.edit().putString("opencode_session_id", value).apply() }
 
+    /** Opt-in: let one-shot Hermes chat use Meta contributor-tier models (trains on user data). */
+    var allowDataTrainingTiers: Boolean
+        get() = preferences.getBoolean("hermes_allow_data_training_tiers", false)
+        set(value) { preferences.edit().putBoolean("hermes_allow_data_training_tiers", value).apply() }
+
     var antigravitySignedIn: Boolean
         get() = preferences.getBoolean("agent_antigravity_signed_in", false)
         set(value) { preferences.edit().putBoolean("agent_antigravity_signed_in", value).apply() }

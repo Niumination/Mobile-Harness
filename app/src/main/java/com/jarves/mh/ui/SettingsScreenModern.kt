@@ -117,6 +117,7 @@ fun SettingsScreen(
     onPing: () -> Unit,
     onClearTerminal: () -> Unit,
     onRunDiagnostics: () -> Unit = {},
+    onAllowDataTraining: (Boolean) -> Unit = {},
     getSavedApiKey: (ProviderKind) -> String,
     getSavedApiKeys: (ProviderKind) -> List<ApiKeyInfo>,
     onAddApiKey: (ProviderKind, String, String) -> List<ApiKeyInfo>,
@@ -1220,6 +1221,17 @@ private fun ConnectionSettings(
     }
     if (state.agentKind == AgentKind.HERMES) {
         HermesTerminalSignInCard()
+        ContributorTierConsentRow(
+            checked = state.allowDataTraining,
+            onChecked = onAllowDataTraining,
+        )
+        if (state.provider.model.lowercase().startsWith("muse-spark") && !state.allowDataTraining) {
+            Text(
+                "Muse Spark is a Meta contributor tier: it trains on your data and refuses one-shot chat until consent is enabled above. Or switch model to ling-3.0-flash-fin-free.",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
     }
 }
 
@@ -1330,6 +1342,27 @@ private fun DiagnosticsCard(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ContributorTierConsentRow(
+    checked: Boolean,
+    onChecked: (Boolean) -> Unit,
+) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onChecked(!checked) }.padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Allow Meta contributor-tier models", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Text(
+                "Lets one-shot chat use muse-spark. Meta may train on your prompts.",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        SelectionDot(checked)
     }
 }
 

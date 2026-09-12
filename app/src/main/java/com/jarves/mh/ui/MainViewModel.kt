@@ -206,6 +206,7 @@ data class AppUiState(
     val installedAgentVersions: Map<AgentKind, String> = emptyMap(),
     val diagnostics: List<DiagnosticCheck> = emptyList(),
     val diagnosticsRunning: Boolean = false,
+    val allowDataTraining: Boolean = false,
     val agentInstalling: AgentKind? = null,
     val agentMessage: String? = null,
     val agentProgress: Float = 0f,
@@ -283,6 +284,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             backgroundSetupComplete = preferences.backgroundSetupComplete,
             agentKind = initialAgentKind,
             provider = preferences.loadProvider(vault, initialAgentKind),
+            allowDataTraining = preferences.allowDataTrainingTiers,
             activeApiKeyName = vault.list(preferences.loadProvider(vault, initialAgentKind).kind.name)
                 .firstOrNull(ApiKeyInfo::isActive)?.name,
             antigravityAuth = AntigravityAuthState(
@@ -1310,6 +1312,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             result.onSuccess {
                 if (kind == AgentKind.DEEPSEEK_HARNESS) preferences.dshVersion = installer.dshVersion
+                if (kind == AgentKind.HERMES) {
+                    withContext(Dispatchers.IO) {
+                        runCatching { installer.applyHermesConsentFlag(preferences.allowDataTrainingTiers) }
+                    }
+                }
                 selectAgent(kind)
             }
             _state.update { current ->
@@ -1638,6 +1645,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         return out
+    }
+
+    /** Opt-in for Meta contributor-tier models; written into the guest Hermes config. */
+    fun setAllowDataTraining(allow: Boolean) {
+        preferences.allowDataTrainingTiers = allow
+        _state.update { it.copy(allowDataTraining = allow) }
+        viewModelScope.launch {
+            val applied = withContext(Dispatchers.IO) {
+                runCatching { installer.applyHermesConsentFlag(allow) }.getOrDefault(false)
+            }
+            _state.update {
+                it.copy(
+                    toastMessage = if (applied) "Contributor-tier consent saved to Hermes config"
+                    else "Saved — applies when Hermes is installed",
+                )
+            }
+        }
     }
 
     fun pingApi() {

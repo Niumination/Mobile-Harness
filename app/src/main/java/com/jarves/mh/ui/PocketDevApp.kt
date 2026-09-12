@@ -1958,6 +1958,7 @@ private fun RootScreenHost(
                     onPing = viewModel::pingApi,
                     onClearTerminal = viewModel::clearTerminal,
                     onRunDiagnostics = viewModel::runDiagnostics,
+                    onAllowDataTraining = viewModel::setAllowDataTraining,
                     getSavedApiKey = viewModel::getSavedApiKey,
                     getSavedApiKeys = viewModel::getSavedApiKeys,
                     onAddApiKey = viewModel::addApiKey,
@@ -2611,7 +2612,12 @@ private fun ProviderCredentialsStep(
                         model,
                         { onModel(it); status = null },
                         label = { Text("Model name") },
-                        supportingText = { Text("Select an available model or enter an exact model ID.") },
+                        supportingText = {
+                            Text(
+                                if (model.lowercase().startsWith("muse-spark")) "Contributor tier: trains on your data; needs consent in Settings → Hermes after setup, or pick ling for zero setup."
+                                else "Select an available model or enter an exact model ID."
+                            )
+                        },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
