@@ -256,10 +256,10 @@ internal class HermesRuntimeBridge(
         }
         withContext(Dispatchers.IO) {
             val tail = ArrayDeque<String>()
+            var emitted = 0
             try {
                 BufferedReader(InputStreamReader(proc.inputStream)).use { reader ->
                     var line: String?
-                    var emitted = 0
                     while (state.isActive && isActive) {
                         line = reader.readLine() ?: break
                         // ponytail: CLI banners ("Warning: ...") are not answers.
