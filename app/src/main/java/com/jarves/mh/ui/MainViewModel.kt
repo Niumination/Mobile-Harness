@@ -3179,7 +3179,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         toastMessage = event.reason.takeIf { reason ->
                             reason.contains("user not found", true) ||
                                 reason.contains("API key", true) ||
-                                reason.contains("authentication", true)
+                                reason.contains("authentication", true) ||
+                                reason.contains("not installed", true)
                         },
                         activity = listOf(ActivityItem("Task stopped", event.reason)) + current.activity,
                         taskFinishedAtMillis = finishedAt,

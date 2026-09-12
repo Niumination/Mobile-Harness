@@ -1124,6 +1124,13 @@ private fun ConnectionSettings(
         Spacer(Modifier.width(7.dp))
         Text(if (models.isEmpty()) "Find available models" else "Available models (${models.size})")
     }
+    if (selectedKind == ProviderKind.OPENCODE_FREE) {
+        Text(
+            "No key needed — OpenCode Free signs each request with a device session. Nothing to add below.",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    } else {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text("API keys", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1195,6 +1202,7 @@ private fun ConnectionSettings(
                 Text("Save API key")
             }
         }
+    }
     }
     if (status != null) {
         Text(status, fontSize = 12.sp, color = if (statusOk) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error)
