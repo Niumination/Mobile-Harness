@@ -6,6 +6,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 data class DiscoveredModel(val id: String, val displayName: String = id, val isFree: Boolean = false)
@@ -64,7 +65,12 @@ class ProviderApiClient {
         }
         val endpoint = messagesEndpoint(baseUrl, protocol)
         val body = validationBody(model, protocol)
-        val response = request(endpoint, "POST", apiKey, body, protocol, connectTimeoutMs = 8_000, readTimeoutMs = 10_000, sessionId = sessionId, keyless = keyless)
+        var response = request(endpoint, "POST", apiKey, body, protocol, connectTimeoutMs = 8_000, readTimeoutMs = 10_000, sessionId = sessionId, keyless = keyless)
+        // Free-tier relays flap (503/429 minute-to-minute). One retry rides out transient blips.
+        if ((response.code == 429 || response.code in 500..599) && response.error == null) {
+            delay(3_000)
+            response = request(endpoint, "POST", apiKey, body, protocol, connectTimeoutMs = 8_000, readTimeoutMs = 10_000, sessionId = sessionId, keyless = keyless)
+        }
         when {
             response.code in 200..299 -> ConnectionValidation.Success(
                 if (protocol == ProviderProtocol.ANTHROPIC || protocol == ProviderProtocol.ANTHROPIC_GATEWAY || protocol == ProviderProtocol.OPENROUTER) {
