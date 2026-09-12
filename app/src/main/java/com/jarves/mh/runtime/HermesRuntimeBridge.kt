@@ -259,18 +259,36 @@ internal class HermesRuntimeBridge(
             try {
                 BufferedReader(InputStreamReader(proc.inputStream)).use { reader ->
                     var line: String?
+                    var emitted = 0
                     while (state.isActive && isActive) {
                         line = reader.readLine() ?: break
                         // ponytail: CLI banners ("Warning: ...") are not answers.
-                        if (line.isNotBlank() && !line.startsWith("Warning:")) {
-                            tail.addLast(line)
+                        val clean = line.trim()
+                        if (clean.isNotEmpty() && !clean.startsWith("Warning:")) {
+                            tail.addLast(clean)
                             if (tail.size > 20) tail.removeFirst()
-                            _events.emit(RuntimeEvent.AssistantDelta(state.sessionId, line))
+                            _events.emit(RuntimeEvent.AssistantDelta(state.sessionId, clean))
+                            emitted++
                         }
                     }
                 }
                 // ponytail: a hung model used to spin forever with no way out but force-stop.
                 val exit = withTimeoutOrNull(10 * 60 * 1_000L) { proc.waitFor() }
+                // ponytail: the live tail hits EOF while the guest is still
+                // writing (answer lands after the reader gave up) — reconcile
+                // anything missed straight from the finished file.
+                runCatching {
+                    (state.process as? NativeSpawnProcess)?.outputFile
+                        ?.readLines().orEmpty()
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() && !it.startsWith("Warning:") }
+                        .drop(emitted)
+                        .forEach { missed ->
+                            tail.addLast(missed)
+                            if (tail.size > 20) tail.removeFirst()
+                            _events.emit(RuntimeEvent.AssistantDelta(state.sessionId, missed))
+                        }
+                }
                 if (!state.isActive || !isActive) return@withContext
                 if (exit == null) {
                     state.process?.destroy()
