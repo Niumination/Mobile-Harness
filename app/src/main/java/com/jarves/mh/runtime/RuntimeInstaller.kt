@@ -484,11 +484,13 @@ internal object HermesGuestScripts {
         }
     }
 
-    /** Shell that (re)installs Hermes Agent from the pinned upstream tarball so the
-     * guest always carries the keyless opencode-free provider. Layers: uv+tarball,
-     * pip+tarball, pip+PyPI last resort. Shared by fresh install and update. */
+    /** Shell that installs Hermes from a pinned upstream checkout (official layout:
+     * repo + `uv sync --locked` venv), because PyPI installs are unsupported upstream
+     * and the 0.19.0 release predates keyless opencode-free. Falls back to the
+     * tarball build, then PyPI, so slow networks still end with a working binary. */
     private fun hermesInstallChain(): String =
-        "install_hermes_pip() { \"${'$'}@\" install --break-system-packages \"${'$'}PKG\" || \"${'$'}@\" install \"${'$'}PKG\"; }\n" +
+        "install_hermes_tarball() {\n" +
+            "install_hermes_pip() { \"${'$'}@\" install --break-system-packages \"${'$'}PKG\" || \"${'$'}@\" install \"${'$'}PKG\"; }\n" +
             "rm -rf /root/.local/share/uv/tools/hermes-agent\n" +
             "for b in hermes hermes-acp hermes-agent; do [ ! -e /root/.local/bin/\"${'$'}b\" ] || [ -x /root/.local/bin/\"${'$'}b\" ] || rm -f /root/.local/bin/\"${'$'}b\"; done\n" +
             "PKG=\"hermes-agent@$HERMES_GIT_TARBALL\"\n" +
@@ -501,7 +503,25 @@ internal object HermesGuestScripts {
             "PKG=hermes-agent install_hermes_pip \"${'$'}PYBIN\" -m pip\n" +
             "HBIN=${'$'}(dirname \"${'$'}(command -v \"${'$'}PYBIN\")\")/hermes\n" +
             "if [ ! -x /root/.local/bin/hermes ] && [ -x \"${'$'}HBIN\" ]; then ln -sf \"${'$'}HBIN\" /root/.local/bin/hermes; fi\n" +
-            "fi\n"
+            "fi\n" +
+            "}\n" +
+            "HERMES_SRC=/usr/local/lib/hermes-agent\n" +
+            "HERMES_SHA=$HERMES_GIT_SHA\n" +
+            "command -v git >/dev/null 2>&1 || apt-get install -y git\n" +
+            "rm -rf /root/.local/share/uv/tools/hermes-agent\n" +
+            "for b in hermes hermes-acp hermes-agent; do [ ! -e /root/.local/bin/\"${'$'}b\" ] || [ -x /root/.local/bin/\"${'$'}b\" ] || rm -f /root/.local/bin/\"${'$'}b\"; done\n" +
+            "if [ ! -d \"${'$'}HERMES_SRC/.git\" ]; then rm -rf \"${'$'}HERMES_SRC\"; git clone --depth 1 --branch main https://github.com/NousResearch/hermes-agent.git \"${'$'}HERMES_SRC\"; fi\n" +
+            "PIN_OK=0\n" +
+            "if cd \"${'$'}HERMES_SRC\" 2>/dev/null && git fetch --depth 1 origin \"${'$'}HERMES_SHA\" 2>/dev/null && git checkout \"${'$'}HERMES_SHA\" 2>/dev/null; then PIN_OK=1; fi\n" +
+            "if [ \"${'$'}PIN_OK\" = 1 ]; then\n" +
+            "UV_CFG=${'$'}(mktemp -d)\n" +
+            "( unset UV_NO_CONFIG UV_CONFIG_FILE; export XDG_CONFIG_HOME=\"${'$'}UV_CFG\" XDG_CONFIG_DIRS=\"${'$'}UV_CFG\"; UV_PROJECT_ENVIRONMENT=\"${'$'}HERMES_SRC/venv\" uv sync --locked --python \"${'$'}PYBIN\" )\n" +
+            "if [ ! -x \"${'$'}HERMES_SRC/venv/bin/hermes\" ]; then ( unset UV_NO_CONFIG UV_CONFIG_FILE; export XDG_CONFIG_HOME=\"${'$'}UV_CFG\" XDG_CONFIG_DIRS=\"${'$'}UV_CFG\"; UV_PROJECT_ENVIRONMENT=\"${'$'}HERMES_SRC/venv\" uv sync --extra all --locked --python \"${'$'}PYBIN\" ); fi\n" +
+            "rmdir \"${'$'}UV_CFG\" 2>/dev/null || true\n" +
+            "for b in hermes hermes-acp hermes-agent; do if [ -x \"${'$'}HERMES_SRC/venv/bin/${'$'}b\" ]; then ln -sf \"${'$'}HERMES_SRC/venv/bin/${'$'}b\" /root/.local/bin/${'$'}b; fi; done\n" +
+            "fi\n" +
+            "if [ ! -x /root/.local/bin/hermes ]; then install_hermes_tarball; fi\n" +
+            "[ -x /root/.local/bin/hermes ]\n"
 
 
     fun isGitHubCliInstalled(): Boolean = isInstalled() &&
@@ -706,7 +726,7 @@ internal object HermesGuestScripts {
                 hermesInstallChain(),
             displayCommand = "Updating Hermes Agent",
             fraction = 0.5f,
-            timeoutMs = 600_000L,
+            timeoutMs = 20 * 60 * 1_000L,
             onProgress = onProgress,
             failureMessage = "Hermes Agent update failed",
         )
