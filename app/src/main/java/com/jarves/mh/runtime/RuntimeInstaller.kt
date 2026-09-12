@@ -469,15 +469,7 @@ internal object HermesGuestScripts {
         )
         runGuestCommand(
             proot = proot,
-            command = env +
-                "install_hermes_pip() { \"\$@\" install --break-system-packages hermes-agent || \"\$@\" install hermes-agent; }\n" +
-                "rm -rf /root/.local/share/uv/tools/hermes-agent\n" +
-                "for b in hermes hermes-acp hermes-agent; do [ ! -e /root/.local/bin/\"\$b\" ] || [ -x /root/.local/bin/\"\$b\" ] || rm -f /root/.local/bin/\"\$b\"; done\n" +
-                "if ! uv tool install --python \"\$PYBIN\" hermes-agent; then\n" +
-                "install_hermes_pip \"\$PYBIN\" -m pip\n" +
-                "HBIN=\$(dirname \"\$(command -v \"\$PYBIN\")\")/hermes\n" +
-                "if [ ! -x /root/.local/bin/hermes ] && [ -x \"\$HBIN\" ]; then ln -sf \"\$HBIN\" /root/.local/bin/hermes; fi\n" +
-                "fi\n",
+            command = env + hermesInstallChain(),
             displayCommand = "Installing hermes-agent package",
             fraction = 0.55f,
             timeoutMs = 20 * 60 * 1_000L,
@@ -486,11 +478,30 @@ internal object HermesGuestScripts {
         )
         onProgress(RuntimeInstallProgress("Verifying Hermes Agent", 0.9f))
         verifyGuest(proot, "$HERMES_GUEST_PATH --version", "Hermes Agent verification failed")
-        hermesMarker.writeText(HERMES_VERSION)
+        hermesMarker.writeText(HERMES_WANT)
         require(isAgentInstalled(com.jarves.mh.model.AgentKind.HERMES)) {
             "Hermes Agent installation is incomplete"
         }
     }
+
+    /** Shell that (re)installs Hermes Agent from the pinned upstream tarball so the
+     * guest always carries the keyless opencode-free provider. Layers: uv+tarball,
+     * pip+tarball, pip+PyPI last resort. Shared by fresh install and update. */
+    private fun hermesInstallChain(): String =
+        "install_hermes_pip() { \"$@\" install --break-system-packages \"$PKG\" || \"$@\" install \"$PKG\"; }\n" +
+            "rm -rf /root/.local/share/uv/tools/hermes-agent\n" +
+            "for b in hermes hermes-acp hermes-agent; do [ ! -e /root/.local/bin/\"$b\" ] || [ -x /root/.local/bin/\"$b\" ] || rm -f /root/.local/bin/\"$b\"; done\n" +
+            "PKG=\"hermes-agent@$HERMES_GIT_TARBALL\"\n" +
+            "if ! uv tool install --python \"$PYBIN\" \"$PKG\"; then\n" +
+            "PKG=\"$HERMES_GIT_TARBALL\" install_hermes_pip \"$PYBIN\" -m pip\n" +
+            "HBIN=$(dirname \"$(command -v \"$PYBIN\")\")/hermes\n" +
+            "if [ ! -x /root/.local/bin/hermes ] && [ -x \"$HBIN\" ]; then ln -sf \"$HBIN\" /root/.local/bin/hermes; fi\n" +
+            "fi\n" +
+            "if [ ! -x /root/.local/bin/hermes ]; then\n" +
+            "PKG=hermes-agent install_hermes_pip \"$PYBIN\" -m pip\n" +
+            "HBIN=$(dirname \"$(command -v \"$PYBIN\")\")/hermes\n" +
+            "if [ ! -x /root/.local/bin/hermes ] && [ -x \"$HBIN\" ]; then ln -sf \"$HBIN\" /root/.local/bin/hermes; fi\n" +
+            "fi\n"
 
 
     fun isGitHubCliInstalled(): Boolean = isInstalled() &&
@@ -596,6 +607,13 @@ internal object HermesGuestScripts {
                         put(com.jarves.mh.model.AgentKind.ANTIGRAVITY, AgentUpdateInfo(current, latest))
                     }
             }
+            // Hermes has no registry "latest": anything but the pinned git build
+            // is an update away (usually PyPI 0.19.0 without opencode-free).
+            installed[com.jarves.mh.model.AgentKind.HERMES]?.let { current ->
+                if (current != HERMES_WANT) {
+                    put(com.jarves.mh.model.AgentKind.HERMES, AgentUpdateInfo(current, HERMES_WANT))
+                }
+            }
         }
     }
 
@@ -685,7 +703,7 @@ internal object HermesGuestScripts {
                 "export DEBIAN_FRONTEND=noninteractive UV_LINK_MODE=copy HOME=/root\n" +
                 HermesGuestScripts.hermesPythonPickSnippet() +
                 "if [ -z \"\$PYBIN\" ]; then echo 'No Python >= 3.11 in guest; reinstall Hermes Agent'; exit 1; fi\n" +
-                "uv tool upgrade --python \"\$PYBIN\" hermes-agent || \"\$PYBIN\" -m pip install --break-system-packages --upgrade hermes-agent || \"\$PYBIN\" -m pip install --upgrade hermes-agent",
+                hermesInstallChain(),
             displayCommand = "Updating Hermes Agent",
             fraction = 0.5f,
             timeoutMs = 600_000L,
@@ -1896,6 +1914,13 @@ printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decis
         const val GUEST_BASE_PATH =
             "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         private const val HERMES_VERSION = "0.1.0"
+        /** PyPI hermes-agent (0.19.0, Jul 2026) predates the keyless opencode-free
+         * provider (born 2026-08-13, keyless 2026-08-20), so the guest installs
+         * from a pinned upstream tarball instead. Public repo, no credentials. */
+        private const val HERMES_GIT_SHA = "d62716c7043e57ef7a29e81a02ddbc19334e29df"
+        private const val HERMES_GIT_TARBALL = "https://github.com/NousResearch/hermes-agent/archive/$HERMES_GIT_SHA.tar.gz"
+        /** Marker value for the git build — anything else means reinstall/update. */
+        private const val HERMES_WANT = "git-d62716c"
         const val GITHUB_CLI_GUEST_PATH = "/root/.local/bin/gh"
         private const val AGY_VERSION = "1.1.27"
         private const val AGY_RELEASE_URL = "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.27-5211191891591168/linux-arm/cli_linux_arm64.tar.gz"

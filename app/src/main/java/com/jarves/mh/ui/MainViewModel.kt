@@ -318,6 +318,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch { dshRuntime.events.collect(::onRuntimeEvent) }
         viewModelScope.launch { antigravityRuntime.events.collect(::onRuntimeEvent) }
+        viewModelScope.launch { hermesRuntime.events.collect(::onRuntimeEvent) }
         viewModelScope.launch {
             antigravityAuthController.state.collect { auth ->
                 _state.update { it.copy(antigravityAuth = auth) }
@@ -1249,6 +1250,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(onboardingComplete = true, provider = saved, startupStage = StartupStage.READY) }
         refreshActiveApiKey(profile.kind)
         pingApi()
+        // P0-14: a fresh Hermes choice without the binary is a guaranteed dead chat.
+        if (_state.value.agentKind == AgentKind.HERMES && !installer.isAgentInstalled(AgentKind.HERMES)) {
+            installAgent(AgentKind.HERMES)
+        }
     }
 
     fun finishAntigravityOnboarding() {
@@ -1567,13 +1572,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return providerApi.discoverModels(profile.baseUrl, key, profile.effectiveProtocol(), preferences.opencodeSessionId, keyless = profile.kind == ProviderKind.OPENCODE_FREE)
     }
 
-    suspend fun validateProvider(
+    /** Single probe behind Test, ping, and doctor (ponytail: was triplicated). */
+    private suspend fun probeConnection(
         profile: ProviderProfile,
         secret: String,
         models: List<com.jarves.mh.network.DiscoveredModel>,
     ): ConnectionValidation {
         val key = secret.ifBlank { vault.get(profile.kind.name).orEmpty() }
         return providerApi.validate(profile.baseUrl, profile.model, key, profile.effectiveProtocol(), models, preferences.opencodeSessionId, keyless = profile.kind == ProviderKind.OPENCODE_FREE)
+    }
+
+    suspend fun validateProvider(
+        profile: ProviderProfile,
+        secret: String,
+        models: List<com.jarves.mh.network.DiscoveredModel>,
+    ): ConnectionValidation {
+        return probeConnection(profile, secret, models)
     }
 
     /** `hermes doctor` for the phone: staged host-side checks plus a live
@@ -1610,7 +1624,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         out += DiagnosticCheck(
             "Install marker",
             marker.isNotBlank(),
-            if (marker.isNotBlank()) "v$marker" else "No marker and binary unusable — reinstall Hermes Agent",
+            when {
+                marker.isBlank() -> "No marker and binary unusable — reinstall Hermes Agent"
+                marker.startsWith("git-") -> "Hermes build $marker (opencode-free keyless)"
+                else -> "v$marker"
+            },
         )
         val python = runtimeOk &&
             runCatching { installer.guestToolUsable("/root/.local/bin/python3.11") }.getOrDefault(false)
@@ -1633,10 +1651,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             out += DiagnosticCheck("Provider probe", false, "Skipped — set provider, model, and key first")
         } else {
             val probe = runCatching {
-                providerApi.validate(
-                    profile.baseUrl, profile.model, key, profile.effectiveProtocol(),
-                    emptyList(), preferences.opencodeSessionId, keyless = keyless,
-                )
+                probeConnection(profile, key, emptyList())
             }.getOrNull()
             when (probe) {
                 is ConnectionValidation.Success -> out += DiagnosticCheck("Provider probe", true, probe.message.take(120))
@@ -1680,8 +1695,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_state.value.apiPingStatus == ApiPingStatus.PINGING) return
         _state.update { it.copy(apiPingStatus = ApiPingStatus.PINGING, apiPingMessage = "Sending a minimal test request…") }
         viewModelScope.launch {
-            val key = vault.get(profile.kind.name).orEmpty()
-            val result = providerApi.validate(profile.baseUrl, profile.model, key, profile.effectiveProtocol(), emptyList(), preferences.opencodeSessionId, keyless = profile.kind == ProviderKind.OPENCODE_FREE)
+            val result = probeConnection(profile, vault.get(profile.kind.name).orEmpty(), emptyList())
             when (result) {
                 is ConnectionValidation.Success -> _state.update {
                     it.copy(apiPingStatus = ApiPingStatus.OK, apiPingMessage = "API responded successfully")
@@ -3200,14 +3214,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         isRunning = false,
                         activeSessionId = null,
                         pendingApproval = null,
-                        toastMessage = event.reason.takeIf { reason ->
-                            reason.contains("user not found", true) ||
-                                reason.contains("API key", true) ||
-                                reason.contains("authentication", true) ||
-                                reason.contains("not installed", true) ||
-                                reason.contains("Hermes exited", true) ||
-                                reason.contains("did not start", true)
-                        },
+                        // ponytail: denylist, not allowlist — every new failure
+                        // text used to die silent (P0-3). Failures must be loud.
+                        toastMessage = event.reason.takeIf { it.isNotBlank() },
                         activity = listOf(ActivityItem("Task stopped", event.reason)) + current.activity,
                         taskFinishedAtMillis = finishedAt,
                         currentTaskRequest = null,

@@ -518,14 +518,7 @@ class DshRuntimeBridge(
     }
 
     private fun buildContextPrompt(currentPrompt: String, history: List<ChatMessage>, guestWorkspacePath: String, projectKind: ProjectKind): String {
-        val priorMessages = history
-            .filter { msg ->
-                (msg.fromUser || !msg.text.startsWith("Hi! Tell me")) &&
-                !msg.text.startsWith("Failed to") &&
-                !msg.text.startsWith("Error:") &&
-                !msg.text.contains("API Error")
-            }
-            .dropLast(1)
+        val priorMessages = filterPriorChatMessages(history)
 
         val sb = StringBuilder()
         sb.appendLine("<project_workspace>")

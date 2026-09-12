@@ -17,7 +17,14 @@ internal class NativeSpawnProcess private constructor(
     @Volatile private var result: Int? = null
 
     override fun getOutputStream(): OutputStream = stdin
-    override fun getInputStream(): InputStream = FileInputStream(outputFile)
+    override fun getInputStream(): InputStream {
+        // ponytail: native spawn creates the file asynchronously (slow proot
+        // fork); opening it immediately races with creation (ENOENT) and kills
+        // the session. Wait for it instead — fixes all bridges at once.
+        val deadline = System.currentTimeMillis() + 10_000L
+        while (!outputFile.isFile && System.currentTimeMillis() < deadline) Thread.sleep(50)
+        return FileInputStream(outputFile)
+    }
     override fun getErrorStream(): InputStream = ByteArrayInputStream(ByteArray(0))
 
     override fun waitFor(): Int {

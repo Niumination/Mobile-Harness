@@ -602,14 +602,7 @@ class ClaudeRuntimeBridge(
 
     private fun buildContextPrompt(currentPrompt: String, history: List<ChatMessage>, guestWorkspacePath: String, projectKind: ProjectKind): String {
         // Filter out the current prompt (last user message), system greeting, and any error messages
-        val priorMessages = history
-            .filter { msg ->
-                (msg.fromUser || !msg.text.startsWith("Hi! Tell me")) &&
-                !msg.text.startsWith("Failed to") &&
-                !msg.text.startsWith("Error:") &&
-                !msg.text.contains("API Error")
-            }
-            .dropLast(1) // Drop the current prompt which was just added
+        val priorMessages = filterPriorChatMessages(history)
 
         val sb = StringBuilder()
         sb.appendLine("<project_workspace>")

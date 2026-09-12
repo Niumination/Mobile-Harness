@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Hermes Runtime Bridge.
@@ -79,6 +80,10 @@ internal class HermesRuntimeBridge(
 
         withContext(Dispatchers.IO) {
             try {
+                // ponytail: own session logs were piling up in cache/ with no rotation.
+                context.cacheDir.listFiles { file -> file.name.startsWith("runtime-output-") }?.forEach { file ->
+                    if (System.currentTimeMillis() - file.lastModified() > 7 * 24 * 60 * 60 * 1000L) file.delete()
+                }
                 val installed = installer.installedRuntime()
                 if (!installer.isAgentInstalled(com.jarves.mh.model.AgentKind.HERMES)) {
                     _events.emit(
@@ -100,7 +105,7 @@ internal class HermesRuntimeBridge(
                     return@withContext
                 }
                 // Real Hermes CLI: `hermes chat -q PROMPT -Q -m MODEL --provider NAME`.
-                val hermesCmd = buildHermesCommand(prompt, provider)
+                val hermesCmd = buildHermesCommand(prompt, provider, conversationHistory, "/workspace/$projectSlug")
                     ?: run {
                         _events.emit(
                             RuntimeEvent.SessionFailed(
@@ -181,12 +186,25 @@ internal class HermesRuntimeBridge(
      * One-shot: `hermes chat -q PROMPT -Q -m MODEL --provider NAME`.
      * Returns null when the endpoint has no built-in Hermes provider mapping.
      */
-    private fun buildHermesCommand(prompt: String, provider: ProviderProfile): List<String>? {
+    private fun buildHermesCommand(
+        prompt: String,
+        provider: ProviderProfile,
+        history: List<ChatMessage>,
+        guestWorkspacePath: String,
+    ): List<String>? {
         val mapped = mapProvider(provider) ?: return null
+        val fullPrompt = buildString {
+            val block = conversationHistoryBlock(filterPriorChatMessages(history), guestWorkspacePath)
+            if (block.isNotBlank()) {
+                appendLine(block)
+                appendLine("Now, respond to this new message from the user:")
+            }
+            append(prompt)
+        }
         return listOf(
             HERMES_EXECUTABLE,
             HERMES_CHAT_CMD,
-            "-q", prompt,
+            "-q", fullPrompt,
             "-Q",
             "-m", provider.model.ifBlank { return null },
             "--provider", mapped.name,
@@ -243,15 +261,22 @@ internal class HermesRuntimeBridge(
                     var line: String?
                     while (state.isActive && isActive) {
                         line = reader.readLine() ?: break
-                        if (line.isNotBlank()) {
+                        // ponytail: CLI banners ("Warning: ...") are not answers.
+                        if (line.isNotBlank() && !line.startsWith("Warning:")) {
                             tail.addLast(line)
                             if (tail.size > 20) tail.removeFirst()
                             _events.emit(RuntimeEvent.AssistantDelta(state.sessionId, line))
                         }
                     }
                 }
-                val exit = proc.waitFor()
+                // ponytail: a hung model used to spin forever with no way out but force-stop.
+                val exit = withTimeoutOrNull(10 * 60 * 1_000L) { proc.waitFor() }
                 if (!state.isActive || !isActive) return@withContext
+                if (exit == null) {
+                    state.process?.destroy()
+                    _events.emit(RuntimeEvent.SessionFailed(state.sessionId, "Hermes timed out after 10 minutes. Try a smaller request or check the provider."))
+                    return@withContext
+                }
                 if (exit == 0) {
                     _events.emit(RuntimeEvent.SessionCompleted(state.sessionId))
                 } else {

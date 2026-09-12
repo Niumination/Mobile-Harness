@@ -181,6 +181,7 @@ The `deepseek_harness` branch provided the multi-agent infrastructure. Merge con
 | 2026-09-12 | OpenCode Free keyless: preset tanpa key + header x-opencode-session di semua host opencode.ai (tanpa itu 400 MissingSessionID), PATH terminal mencakup /root/.local/bin |
 | 2026-09-12 | Audit fix: hapus SettingsScreen.kt mati 854 baris, retry 503/429 disatukan untuk discover+validate, peringatan protokol muse-spark di preset Free |
 | 2026-09-12 | Crash fix: duplikat key LazyColumn "interrupted-…" (persist tiap event) — filter + id unik + guard saat load |
+| 2026-09-13 | Hermes chat overhaul: collect event (P0-11), tarball pin d62716c + update-check (P0-1/2), toast denylist (P0-3), tunggu file output (P0-4), CUSTOM disembunyikan (P0-5), history multi-turn (P0-8), timeout 10 mnt, rotasi log, ChatHistory bersama DSH/Claude |
 
 ## CI Debug Notes
 

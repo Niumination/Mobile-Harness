@@ -105,12 +105,14 @@ val DEEPSEEK_HARNESS_PROVIDERS: Set<ProviderKind> = setOf(
 
 /** Provider kinds usable with [AgentKind.HERMES]. Hermes talks to real model
  * endpoints — no localhost presets. Pick the endpoint type, then enter
- * its base URL, key, and wire protocol. */
+ * its base URL, key, and wire protocol.
+ * ponytail: CUSTOM excluded — the Hermes bridge has no custom-endpoint mapping
+ * (mapProvider null), so offering it was a guaranteed dead end. Re-add when a
+ * custom mapping exists. */
 val HERMES_PROVIDERS: Set<ProviderKind> = setOf(
     ProviderKind.ANTHROPIC,
     ProviderKind.OPENCODE_ZEN,
     ProviderKind.OPENCODE_FREE,
-    ProviderKind.CUSTOM,
 )
 
 /** Provider choices shown for the selected coding agent. */
