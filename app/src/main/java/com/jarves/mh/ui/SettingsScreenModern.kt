@@ -520,6 +520,7 @@ fun SettingsScreen(
                         onNewKeyName = { newKeyName = it },
                         onNewApiKey = { newApiKey = it },
                         onToggleNewKey = { newKeyVisible = !newKeyVisible },
+                        onAllowDataTraining = onAllowDataTraining,
                         onAddKey = {
                             savedKeys = onAddApiKey(selectedKind, newKeyName, newApiKey.trim())
                             newKeyName = ""
@@ -993,6 +994,7 @@ private fun ConnectionSettings(
     onRemoveKey: (String) -> Unit,
     onModels: () -> Unit,
     onValidate: () -> Unit,
+    onAllowDataTraining: (Boolean) -> Unit = {},
 ) {
     val visibleKinds = remember(state.agentKind) { providersForAgent(state.agentKind) }
     var providerExpanded by rememberSaveable { mutableStateOf(false) }
