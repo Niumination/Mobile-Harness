@@ -419,6 +419,11 @@ class AppPreferences(private val context: Context) {
                 )
             }
         }.getOrDefault(emptyList())
+            // Crash guard: old transcripts may hold duplicate "interrupted-…" blocks
+            // (persisted on every event pre-fix). Drop them and dedupe by id so
+            // LazyColumn never sees a duplicate key again.
+            .filterNot { it.id.startsWith("interrupted-") }
+            .distinctBy { it.id }
     }
 
     private fun String.toChatTitle(): String {

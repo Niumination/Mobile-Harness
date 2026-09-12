@@ -3286,12 +3286,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val project = current.activeProject ?: return
         val chatId = current.activeChatId ?: return
         val liveItems = if (includeLiveProcess) current.liveProcess.filterNot(::isNoisyRuntimeItem) else emptyList()
+        // Drop previously persisted "interrupted-…" blocks first: this runs on every
+        // runtime event, and re-appending the same id crashes LazyColumn with a
+        // duplicate key (FATAL). Timestamp suffix keeps each write unique.
+        val base = current.messages.filterNot { it.id.startsWith("interrupted-") }
         val messages = if (liveItems.isEmpty() && !current.liveThinking) {
-            current.messages
+            base
         } else {
             val startedAt = current.workSegmentStartedAtMillis ?: current.taskStartedAtMillis ?: System.currentTimeMillis()
-            current.messages + ChatMessage(
-                id = "interrupted-${current.activeSessionId ?: chatId}",
+            base + ChatMessage(
+                id = "interrupted-${current.activeSessionId ?: chatId}-${System.currentTimeMillis()}",
                 fromUser = false,
                 text = "",
                 workItems = liveItems.map { it.copy(isComplete = true) } + ActivityItem(
