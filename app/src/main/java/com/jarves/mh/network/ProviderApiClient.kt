@@ -68,9 +68,9 @@ class ProviderApiClient {
         when {
             response.code in 200..299 -> ConnectionValidation.Success(
                 if (protocol == ProviderProtocol.ANTHROPIC || protocol == ProviderProtocol.ANTHROPIC_GATEWAY || protocol == ProviderProtocol.OPENROUTER) {
-                    "Anthropic Messages endpoint verified. Claude Code settings are ready."
+                    "Anthropic Messages endpoint verified. Settings are ready."
                 } else {
-                    "Connection successful. Claude Code settings are ready."
+                    "Connection successful. Settings are ready."
                 },
             )
             response.code == 401 || response.code == 403 -> ConnectionValidation.Failure("The API key was rejected.")

@@ -437,6 +437,8 @@ internal object HermesGuestScripts {
             proot = proot,
             command = env +
                 "install_hermes_pip() { \"\$@\" install --break-system-packages hermes-agent || \"\$@\" install hermes-agent; }\n" +
+                "rm -rf /root/.local/share/uv/tools/hermes-agent\n" +
+                "for b in hermes hermes-acp hermes-agent; do [ ! -e /root/.local/bin/\"\$b\" ] || [ -x /root/.local/bin/\"\$b\" ] || rm -f /root/.local/bin/\"\$b\"; done\n" +
                 "if ! uv tool install --python \"\$PYBIN\" hermes-agent; then\n" +
                 "install_hermes_pip \"\$PYBIN\" -m pip\n" +
                 "HBIN=\$(dirname \"\$(command -v \"\$PYBIN\")\")/hermes\n" +
