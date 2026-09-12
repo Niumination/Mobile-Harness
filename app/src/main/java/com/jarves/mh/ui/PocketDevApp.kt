@@ -2420,7 +2420,7 @@ private fun ProviderCredentialsStep(
     var showModels by rememberSaveable { mutableStateOf(false) }
     var modelSearch by rememberSaveable { mutableStateOf("") }
     val modelSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    val hasKey = apiKey.isNotBlank() || hasStoredSecret
+    val hasKey = apiKey.isNotBlank() || hasStoredSecret || provider == ProviderKind.OPENCODE_FREE
     val filteredModels = remember(models, modelSearch) {
         val query = modelSearch.trim()
         if (query.isEmpty()) models else models.filter {
@@ -2586,6 +2586,13 @@ private fun ProviderCredentialsStep(
                     if (provider == ProviderKind.CUSTOM) {
                         DshApiProtocolPicker(selected = dshApi, onSelected = { onDshApi(it); status = null })
                     }
+                    if (provider == ProviderKind.OPENCODE_FREE) {
+                        Text(
+                            "No key needed — OpenCode Free signs each request with a device session.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
                     OutlinedTextField(
                         apiKey,
                         { onApiKey(it); status = null },
@@ -2599,6 +2606,7 @@ private fun ProviderCredentialsStep(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    }
                     OutlinedTextField(
                         model,
                         { onModel(it); status = null },
