@@ -3204,7 +3204,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             reason.contains("user not found", true) ||
                                 reason.contains("API key", true) ||
                                 reason.contains("authentication", true) ||
-                                reason.contains("not installed", true)
+                                reason.contains("not installed", true) ||
+                                reason.contains("Hermes exited", true) ||
+                                reason.contains("did not start", true)
                         },
                         activity = listOf(ActivityItem("Task stopped", event.reason)) + current.activity,
                         taskFinishedAtMillis = finishedAt,
