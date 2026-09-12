@@ -22,6 +22,29 @@ sealed interface ConnectionValidation {
 }
 
 class ProviderApiClient {
+    /**
+     * Single POST/GET with one retry on transient free-tier blips (429/5xx).
+     * Shared by validate() and discoverModels() so both ride out the same flaps.
+     */
+    private suspend fun requestWithTransientRetry(
+        endpoint: String,
+        method: String,
+        apiKey: String,
+        body: String? = null,
+        protocol: ProviderProtocol,
+        connectTimeoutMs: Int = 8_000,
+        readTimeoutMs: Int = 10_000,
+        sessionId: String = "",
+        keyless: Boolean = false,
+    ): HttpResult {
+        var response = request(endpoint, method, apiKey, body, protocol, connectTimeoutMs = connectTimeoutMs, readTimeoutMs = readTimeoutMs, sessionId = sessionId, keyless = keyless)
+        if ((response.code == 429 || response.code in 500..599) && response.error == null) {
+            delay(3_000)
+            response = request(endpoint, method, apiKey, body, protocol, connectTimeoutMs = connectTimeoutMs, readTimeoutMs = readTimeoutMs, sessionId = sessionId, keyless = keyless)
+        }
+        return response
+    }
+
     suspend fun discoverModels(
         baseUrl: String,
         apiKey: String,
@@ -36,7 +59,7 @@ class ProviderApiClient {
         var authError = false
         var lastMessage = "This provider did not expose a model list. You can enter a custom model name."
         for (endpoint in modelEndpoints(baseUrl, protocol)) {
-            val response = request(endpoint, "GET", apiKey, protocol = protocol, sessionId = sessionId, keyless = keyless)
+            val response = requestWithTransientRetry(endpoint, "GET", apiKey, protocol = protocol, sessionId = sessionId, keyless = keyless)
             when {
                 response.code == 401 || response.code == 403 -> authError = true
                 response.code in 200..299 -> {
@@ -65,12 +88,7 @@ class ProviderApiClient {
         }
         val endpoint = messagesEndpoint(baseUrl, protocol)
         val body = validationBody(model, protocol)
-        var response = request(endpoint, "POST", apiKey, body, protocol, connectTimeoutMs = 8_000, readTimeoutMs = 10_000, sessionId = sessionId, keyless = keyless)
-        // Free-tier relays flap (503/429 minute-to-minute). One retry rides out transient blips.
-        if ((response.code == 429 || response.code in 500..599) && response.error == null) {
-            delay(3_000)
-            response = request(endpoint, "POST", apiKey, body, protocol, connectTimeoutMs = 8_000, readTimeoutMs = 10_000, sessionId = sessionId, keyless = keyless)
-        }
+        val response = requestWithTransientRetry(endpoint, "POST", apiKey, body, protocol, connectTimeoutMs = 8_000, readTimeoutMs = 10_000, sessionId = sessionId, keyless = keyless)
         when {
             response.code in 200..299 -> ConnectionValidation.Success(
                 if (protocol == ProviderProtocol.ANTHROPIC || protocol == ProviderProtocol.ANTHROPIC_GATEWAY || protocol == ProviderProtocol.OPENROUTER) {

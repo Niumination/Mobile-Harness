@@ -2614,7 +2614,7 @@ private fun ProviderCredentialsStep(
                         label = { Text("Model name") },
                         supportingText = {
                             Text(
-                                if (model.lowercase().startsWith("muse-spark")) "Contributor tier: trains on your data; needs consent in Settings → Hermes after setup, or pick ling for zero setup."
+                                if (model.lowercase().startsWith("muse-spark")) "Contributor tier: trains on your data and needs the /responses route — use Custom + openai-responses with consent in Settings, or pick ling for zero setup."
                                 else "Select an available model or enter an exact model ID."
                             )
                         },

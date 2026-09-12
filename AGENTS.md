@@ -179,6 +179,7 @@ The `deepseek_harness` branch provided the multi-agent infrastructure. Merge con
 | 2026-09-12 | AI connection: protocol picker dibuka untuk semua Custom, kartu Terminal sign-in Nous di connection Hermes |
 | 2026-09-12 | Zen endpoint fix: default model OpenCode Zen → muse-spark-1.3 (deepseek hanya dilayani /chat/completions), hint rute famili model untuk custom Zen |
 | 2026-09-12 | OpenCode Free keyless: preset tanpa key + header x-opencode-session di semua host opencode.ai (tanpa itu 400 MissingSessionID), PATH terminal mencakup /root/.local/bin |
+| 2026-09-12 | Audit fix: hapus SettingsScreen.kt mati 854 baris, retry 503/429 disatukan untuk discover+validate, peringatan protokol muse-spark di preset Free |
 
 ## CI Debug Notes
 

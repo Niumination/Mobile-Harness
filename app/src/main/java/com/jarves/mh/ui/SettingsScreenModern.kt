@@ -1121,6 +1121,13 @@ private fun ConnectionSettings(
     }
     Text("Model", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
     OutlinedTextField(model, onModel, label = { Text("Model ID") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+    if (selectedKind == ProviderKind.OPENCODE_FREE && model.lowercase().startsWith("muse-spark")) {
+        Text(
+            "Muse Spark needs the /responses route — the Free preset is locked to /chat/completions. Use Custom with protocol openai-responses, or pick ling-3.0-flash-fin-free.",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.error,
+        )
+    }
     OutlinedButton(onClick = onModels, enabled = baseUrl.isNotBlank() && (apiKey.isNotBlank() || selectedKind == ProviderKind.OPENCODE_FREE) && !isDiscovering, modifier = Modifier.fillMaxWidth().height(50.dp)) {
         if (isDiscovering) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
         else Icon(if (models.isEmpty()) Icons.Default.Search else Icons.Default.KeyboardArrowDown, null, Modifier.size(18.dp))
